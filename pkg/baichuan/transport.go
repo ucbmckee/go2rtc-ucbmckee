@@ -1,0 +1,58 @@
+package baichuan
+
+import (
+	"context"
+	"io"
+	"net"
+	"time"
+)
+
+type transport interface {
+	io.Reader
+	io.Writer
+	SetWriteDeadline(time.Time) error
+	Close() error
+}
+
+func dialTCP(ctx context.Context, cfg Config) (transport, error) {
+	dialer := net.Dialer{Timeout: cfg.Timeout}
+	conn, err := dialer.DialContext(ctx, "tcp", cfg.address())
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
+func writeFull(ctx context.Context, conn transport, timeout time.Duration, b []byte) error {
+	deadline := time.Now().Add(timeout)
+	if value, ok := ctx.Deadline(); ok && value.Before(deadline) {
+		deadline = value
+	}
+	if err := conn.SetWriteDeadline(deadline); err != nil {
+		return err
+	}
+	stop := context.AfterFunc(ctx, func() {
+		_ = conn.SetWriteDeadline(time.Now())
+	})
+	defer func() {
+		stop()
+		_ = conn.SetWriteDeadline(time.Time{})
+	}()
+
+	for len(b) > 0 {
+		n, err := conn.Write(b)
+		if n > 0 {
+			b = b[n:]
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
+}

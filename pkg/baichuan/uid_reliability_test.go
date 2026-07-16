@@ -1,0 +1,148 @@
+package baichuan
+
+import (
+	"bytes"
+	"encoding/xml"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestUIDConnRetransmitsUntilAcknowledged(t *testing.T) {
+	conn, camera := newTestUIDConn(t, time.Second)
+	if _, err := conn.Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+	first := readUIDPacket(t, camera, time.Second)
+	second := readUIDPacket(t, camera, time.Second)
+	if first.magic != uidMagicData || second.magic != uidMagicData ||
+		first.packetID != 0 || second.packetID != 0 ||
+		!bytes.Equal(first.payload, second.payload) {
+		t.Fatalf("unexpected retransmission: first=%+v second=%+v", first, second)
+	}
+	ack, err := marshalUIDAck(conn.clientID, 0, nil, uidSendWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeUIDPacket(t, camera, conn, ack)
+	waitFor(t, time.Second, func() bool {
+		conn.sendMu.Lock()
+		count := conn.sendCount
+		conn.sendMu.Unlock()
+		return count == 0
+	})
+	stats := conn.TransportStats()
+	if stats.SentPackets != 1 || stats.Retransmits == 0 || stats.ReceivedACKs == 0 {
+		t.Fatalf("unexpected send stats: %+v", stats)
+	}
+}
+
+func TestUIDConnSelectiveAcknowledgement(t *testing.T) {
+	conn, camera := newTestUIDConn(t, time.Second)
+	payload := make([]byte, (uidMTU-uidDataHeader)*2+1)
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		_ = readUIDPacket(t, camera, time.Second)
+	}
+	ack, err := marshalUIDAck(conn.clientID, 0, []byte{0, 1}, uidSendWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeUIDPacket(t, camera, conn, ack)
+	waitFor(t, time.Second, func() bool {
+		conn.sendMu.Lock()
+		defer conn.sendMu.Unlock()
+		return conn.sendCount == 1 && conn.sendSlots[1].used
+	})
+	ack, err = marshalUIDAck(conn.clientID, 1, nil, uidSendWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeUIDPacket(t, camera, conn, ack)
+	waitFor(t, time.Second, func() bool {
+		conn.sendMu.Lock()
+		defer conn.sendMu.Unlock()
+		return conn.sendCount == 0
+	})
+}
+
+func TestUIDConnRejectsFutureAcknowledgement(t *testing.T) {
+	conn, camera := newTestUIDConn(t, time.Second)
+	if _, err := conn.Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+	_ = readUIDPacket(t, camera, time.Second)
+	ack, err := marshalUIDAck(conn.clientID, 1, nil, uidSendWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeUIDPacket(t, camera, conn, ack)
+	waitFor(t, time.Second, func() bool {
+		return conn.TransportStats().InvalidPackets == 1
+	})
+	conn.sendMu.Lock()
+	pending := conn.sendCount
+	conn.sendMu.Unlock()
+	if pending != 1 || conn.TransportStats().ReceivedACKs != 0 {
+		t.Fatalf("future ACK changed send window: pending=%d stats=%+v", pending, conn.TransportStats())
+	}
+	ack, err = marshalUIDAck(conn.clientID, 0, nil, uidSendWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeUIDPacket(t, camera, conn, ack)
+	waitFor(t, time.Second, func() bool {
+		conn.sendMu.Lock()
+		defer conn.sendMu.Unlock()
+		return conn.sendCount == 0
+	})
+}
+
+func TestUIDConnAcknowledgementTimeoutIsTerminal(t *testing.T) {
+	conn, _ := newTestUIDConn(t, 120*time.Millisecond)
+	if _, err := conn.Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-conn.done:
+	case <-time.After(time.Second):
+		t.Fatal("missing acknowledgement did not close transport")
+	}
+	if err := conn.readError(); err == nil || !strings.Contains(err.Error(), "acknowledgement timed out") {
+		t.Fatalf("unexpected terminal error: %v", err)
+	}
+}
+
+func TestUIDConnCameraDisconnectIsTerminal(t *testing.T) {
+	conn, camera := newTestUIDConn(t, time.Second)
+	payload, err := xml.Marshal(struct {
+		XMLName    xml.Name `xml:"P2P"`
+		Disconnect struct {
+			CID int32 `xml:"cid"`
+			DID int32 `xml:"did"`
+		} `xml:"D2C_DISC"`
+	}{Disconnect: struct {
+		CID int32 `xml:"cid"`
+		DID int32 `xml:"did"`
+	}{conn.clientID, conn.cameraID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const transaction = 17
+	xorUID(payload, payload, transaction)
+	packet, err := marshalUIDDiscovery(transaction, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeUIDPacket(t, camera, conn, packet)
+	select {
+	case <-conn.done:
+	case <-time.After(time.Second):
+		t.Fatal("camera disconnect did not close transport")
+	}
+	if err = conn.readError(); err == nil || !strings.Contains(err.Error(), "camera closed") {
+		t.Fatalf("unexpected terminal error: %v", err)
+	}
+}
