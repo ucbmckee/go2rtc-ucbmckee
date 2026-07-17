@@ -168,7 +168,10 @@ func TestBackchannelLinearPCM(t *testing.T) {
 			defer cancel()
 			format := baichuan.TalkFormat{SampleRate: 16000, SamplePrecision: 16, SamplesPerBlock: 4}
 			talk := &fakeTalk{format: format, blocks: make(chan []byte, 1)}
-			b := &backchannel{producer: &Producer{ctx: ctx, cancel: cancel}, format: format, talk: talk}
+			client := &fakeTalkClient{}
+			b := &backchannel{
+				producer: &Producer{ctx: ctx, cancel: cancel}, format: format, talk: talk, client: client,
+			}
 			if err := b.setCodec(codec); err != nil {
 				t.Fatal(err)
 			}
@@ -178,6 +181,12 @@ func TestBackchannelLinearPCM(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantBlock(t, talk, format.BytesPerBlock())
+			if err := b.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if talk.closes != 1 || client.closes != 1 {
+				t.Fatalf("session wasn't closed: talk=%d client=%d", talk.closes, client.closes)
+			}
 		})
 	}
 }
