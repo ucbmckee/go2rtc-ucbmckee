@@ -1,6 +1,7 @@
 package nest
 
 import (
+	"encoding/json"
 	"errors"
 	"net/url"
 	"strings"
@@ -16,14 +17,15 @@ import (
 )
 
 type WebRTCClient struct {
-	conn     *webrtc.Conn
-	pc       *pion.PeerConnection
-	api      *API
-	h264     atomic.Pointer[h264Probe]
-	pliOnce  sync.Once
-	done     chan struct{}
-	stopOnce sync.Once
-	stopErr  error
+	conn       *webrtc.Conn
+	pc         *pion.PeerConnection
+	api        *API
+	h264       atomic.Pointer[h264Probe]
+	pliOnce    sync.Once
+	requestPLI func(*core.Media) error
+	done       chan struct{}
+	stopOnce   sync.Once
+	stopErr    error
 }
 
 type RTSPClient struct {
@@ -67,8 +69,11 @@ func (c *WebRTCClient) GetMedias() []*core.Media {
 }
 
 func (c *WebRTCClient) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
-	if probe := c.h264.Load(); probe != nil && codec.Match(probe.track.Codec) {
-		probe.requested.Store(true)
+	if probe := c.h264.Load(); probe != nil && probe.media == media && codec != nil && probe.track.Codec.Match(codec) {
+		// WebRTC Conn calls GetTrack while binding the remote track, before a
+		// downstream consumer exists. The bounded PLI sequence is intentional:
+		// Nest may otherwise withhold SPS/PPS/IDR until explicitly requested.
+		probe.handoffStarted.Store(true)
 		c.pliOnce.Do(func() { go c.requestKeyframes(probe) })
 		return probe.track, nil
 	}
@@ -89,12 +94,30 @@ func (c *WebRTCClient) Stop() error {
 		close(c.done)
 		c.api.StopExtendStreamTimer()
 		c.stopErr = c.conn.Stop()
+		// Release Google's media session after the local peer is closed. A
+		// failed remote cleanup must not turn a successful local stop into an
+		// error; the session will still expire server-side.
+		_ = c.api.StopWebRTCStream()
 	})
 	return c.stopErr
 }
 
 func (c *WebRTCClient) MarshalJSON() ([]byte, error) {
-	return c.conn.MarshalJSON()
+	raw, err := c.conn.MarshalJSON()
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err = json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	if probe := c.h264.Load(); probe != nil {
+		fields["nest"], err = json.Marshal(probe.diagnostics())
+		if err != nil {
+			return nil, err
+		}
+	}
+	return json.Marshal(fields)
 }
 
 func rtcConn(nestAPI *API, rawURL, projectID, deviceID string) (*WebRTCClient, error) {
@@ -178,8 +201,16 @@ func (c *WebRTCClient) requestKeyframesAfter(probe *h264Probe, delays []time.Dur
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
+			select {
+			case <-c.done:
+				return
+			default:
+			}
+			if err := c.requestKeyframe(probe.media); err != nil {
+				probe.pliErrors.Add(1)
+				continue
+			}
 			probe.plis.Add(1)
-			c.requestKeyframe(probe.media)
 		case <-c.done:
 			timer.Stop()
 			return
@@ -187,9 +218,15 @@ func (c *WebRTCClient) requestKeyframesAfter(probe *h264Probe, delays []time.Dur
 	}
 }
 
-func (c *WebRTCClient) requestKeyframe(media *core.Media) {
-	if c.pc == nil || media.Kind != core.KindVideo {
-		return
+func (c *WebRTCClient) requestKeyframe(media *core.Media) error {
+	if c.requestPLI != nil {
+		return c.requestPLI(media)
+	}
+	if c.pc == nil {
+		return errors.New("nest: WebRTC peer unavailable")
+	}
+	if media.Kind != core.KindVideo {
+		return errors.New("nest: PLI requires video")
 	}
 	for _, transceiver := range c.pc.GetTransceivers() {
 		if transceiver.Mid() != media.ID || transceiver.Receiver() == nil {
@@ -197,12 +234,12 @@ func (c *WebRTCClient) requestKeyframe(media *core.Media) {
 		}
 		remote := transceiver.Receiver().Track()
 		if remote != nil {
-			_ = c.pc.WriteRTCP([]rtcp.Packet{
+			return c.pc.WriteRTCP([]rtcp.Packet{
 				&rtcp.PictureLossIndication{MediaSSRC: uint32(remote.SSRC())},
 			})
 		}
-		return
 	}
+	return errors.New("nest: WebRTC video receiver unavailable")
 }
 
 func rtspConn(nestAPI *API, rawURL, projectID, deviceID string) (*RTSPClient, error) {
