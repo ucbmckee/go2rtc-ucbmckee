@@ -28,6 +28,31 @@ type WebRTCClient struct {
 	stopErr    error
 }
 
+const (
+	videoWatchdogTick       = 5 * time.Second
+	videoWatchdogPLIAfter   = 15 * time.Second
+	videoWatchdogPLISpacing = 15 * time.Second
+	videoWatchdogRestart    = 60 * time.Second
+)
+
+type videoWatchdogAction uint8
+
+const (
+	videoWatchdogNone videoWatchdogAction = iota
+	videoWatchdogPLI
+	videoWatchdogRestartAction
+)
+
+func videoWatchdogDecision(idle, sincePLI time.Duration) videoWatchdogAction {
+	if idle >= videoWatchdogRestart {
+		return videoWatchdogRestartAction
+	}
+	if idle >= videoWatchdogPLIAfter && (sincePLI == 0 || sincePLI >= videoWatchdogPLISpacing) {
+		return videoWatchdogPLI
+	}
+	return videoWatchdogNone
+}
+
 type RTSPClient struct {
 	conn *rtsp.Conn
 	api  *API
@@ -86,7 +111,68 @@ func (c *WebRTCClient) AddTrack(media *core.Media, codec *core.Codec, track *cor
 
 func (c *WebRTCClient) Start() error {
 	c.api.StartExtendStreamTimer()
+	go c.monitorVideo()
 	return c.conn.Start()
+}
+
+func (c *WebRTCClient) monitorVideo() {
+	ticker := time.NewTicker(videoWatchdogTick)
+	defer ticker.Stop()
+
+	var probe *h264Probe
+	var idrs uint64
+	var lastIDR, lastPLI time.Time
+	for {
+		select {
+		case <-c.done:
+			return
+		case now := <-ticker.C:
+			current := c.h264.Load()
+			if current == nil || !current.handoffStarted.Load() {
+				continue
+			}
+			if current != probe {
+				probe = current
+				idrs = current.idrs.Load()
+				lastIDR = now
+				lastPLI = time.Time{}
+				continue
+			}
+
+			if current.idrs.Load() != idrs {
+				idrs = current.idrs.Load()
+				lastIDR = now
+			}
+			idle := now.Sub(lastIDR)
+			sincePLI := time.Duration(0)
+			if !lastPLI.IsZero() {
+				sincePLI = now.Sub(lastPLI)
+			}
+			if c.checkVideoWatchdog(current, idle, sincePLI) {
+				_ = c.Stop()
+				return
+			}
+			if videoWatchdogDecision(idle, sincePLI) == videoWatchdogPLI {
+				lastPLI = now
+			}
+		}
+	}
+}
+
+func (c *WebRTCClient) checkVideoWatchdog(probe *h264Probe, idle, sincePLI time.Duration) bool {
+	switch videoWatchdogDecision(idle, sincePLI) {
+	case videoWatchdogRestartAction:
+		probe.watchdogRestarts.Add(1)
+		return true
+	case videoWatchdogPLI:
+		if err := c.requestKeyframe(probe.media); err != nil {
+			probe.pliErrors.Add(1)
+		} else {
+			probe.plis.Add(1)
+			probe.watchdogPLIs.Add(1)
+		}
+	}
+	return false
 }
 
 func (c *WebRTCClient) Stop() error {

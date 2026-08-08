@@ -114,6 +114,57 @@ func TestWebRTCClientContinuesAfterPLIError(t *testing.T) {
 	}
 }
 
+func TestVideoWatchdogThresholds(t *testing.T) {
+	tests := []struct {
+		name        string
+		idle        time.Duration
+		sincePLI    time.Duration
+		wantPLI     bool
+		wantRestart bool
+	}{
+		{name: "healthy", idle: videoWatchdogPLIAfter - time.Nanosecond},
+		{name: "request", idle: videoWatchdogPLIAfter, wantPLI: true},
+		{name: "rate limited", idle: videoWatchdogPLIAfter, sincePLI: videoWatchdogPLISpacing - time.Nanosecond},
+		{name: "restart", idle: videoWatchdogRestart, wantRestart: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := videoWatchdogDecision(tt.idle, tt.sincePLI)
+			want := videoWatchdogNone
+			if tt.wantRestart {
+				want = videoWatchdogRestartAction
+			} else if tt.wantPLI {
+				want = videoWatchdogPLI
+			}
+			if got != want {
+				t.Fatalf("watchdog decision mismatch: want=%d got=%d", want, got)
+			}
+		})
+	}
+}
+
+func TestVideoWatchdogActions(t *testing.T) {
+	media := &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly}
+	probe := newH264Probe(media, &core.Codec{Name: core.CodecH264}, core.NewReceiver(media, &core.Codec{Name: core.CodecH264}))
+	calls := 0
+	client := &WebRTCClient{requestPLI: func(*core.Media) error { calls++; return nil }}
+	if client.checkVideoWatchdog(probe, videoWatchdogPLIAfter, 0) {
+		t.Fatal("PLI should not restart the producer")
+	}
+	if calls != 1 || probe.watchdogPLIs.Load() != 1 || probe.plis.Load() != 1 {
+		t.Fatalf("PLI action not recorded: calls=%d watchdog=%d total=%d", calls, probe.watchdogPLIs.Load(), probe.plis.Load())
+	}
+	if client.checkVideoWatchdog(probe, videoWatchdogPLIAfter, videoWatchdogPLISpacing-time.Nanosecond) {
+		t.Fatal("rate-limited PLI should not restart the producer")
+	}
+	if calls != 1 {
+		t.Fatalf("rate-limited PLI was sent: %d", calls)
+	}
+	if !client.checkVideoWatchdog(probe, videoWatchdogRestart, 0) || probe.watchdogRestarts.Load() != 1 {
+		t.Fatal("restart action was not recorded")
+	}
+}
+
 func TestWebRTCClientMarshalIncludesProbeDiagnostics(t *testing.T) {
 	media := &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly}
 	codec := &core.Codec{Name: core.CodecH264}

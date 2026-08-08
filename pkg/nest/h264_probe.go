@@ -25,6 +25,8 @@ type h264Probe struct {
 	malformed          atomic.Uint64
 	plis               atomic.Uint64
 	pliErrors          atomic.Uint64
+	watchdogPLIs       atomic.Uint64
+	watchdogRestarts   atomic.Uint64
 	firstReady         atomic.Int64
 
 	haveSPS bool
@@ -93,6 +95,8 @@ type h264Diagnostics struct {
 	IDRsAfterHandoff uint64 `json:"video_idrs_after_handoff"`
 	PLIs             uint64 `json:"video_plis"`
 	PLIErrors        uint64 `json:"video_pli_errors"`
+	WatchdogPLIs     uint64 `json:"video_watchdog_plis"`
+	WatchdogRestarts uint64 `json:"video_watchdog_restarts"`
 	Malformed        uint64 `json:"video_malformed"`
 	ReadyAfter       string `json:"video_ready_after,omitempty"`
 	ReadyBefore      bool   `json:"video_ready_before_handoff"`
@@ -107,6 +111,7 @@ func (p *h264Probe) diagnostics() h264Diagnostics {
 		Packets: p.packets.Load(), IDRs: p.idrs.Load(), SPS: p.sps.Load(), PPS: p.pps.Load(),
 		PSAfterHandoff: p.psAfterHandoff.Load(), IDRsAfterHandoff: p.idrsAfterHandoff.Load(),
 		PLIs: p.plis.Load(), PLIErrors: p.pliErrors.Load(), Malformed: p.malformed.Load(),
+		WatchdogPLIs: p.watchdogPLIs.Load(), WatchdogRestarts: p.watchdogRestarts.Load(),
 		ReadyAfter: ready, ReadyBefore: p.readyBeforeHandoff.Load(),
 	}
 }
