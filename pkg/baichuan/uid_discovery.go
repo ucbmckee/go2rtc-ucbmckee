@@ -87,8 +87,7 @@ func discoverUID(ctx context.Context, uid, local, broadcast string, timeout time
 	if err != nil {
 		return nil, fmt.Errorf("baichuan: listen for UID discovery: %w", err)
 	}
-	stopCancel := context.AfterFunc(ctx, func() { _ = conn.SetReadDeadline(time.Now()) })
-	defer stopCancel()
+	defer interruptDeadline(ctx, conn.SetReadDeadline)()
 	if err = enableUIDBroadcast(conn); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("baichuan: enable UID broadcast: %w", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -31,11 +32,17 @@ func writeFull(ctx context.Context, conn transport, timeout time.Duration, b []b
 	if err := conn.SetWriteDeadline(deadline); err != nil {
 		return err
 	}
+	var interrupt sync.WaitGroup
+	interrupt.Add(1)
 	stop := context.AfterFunc(ctx, func() {
 		_ = conn.SetWriteDeadline(time.Now())
+		interrupt.Done()
 	})
 	defer func() {
-		stop()
+		if stop() {
+			interrupt.Done()
+		}
+		interrupt.Wait()
 		_ = conn.SetWriteDeadline(time.Time{})
 	}()
 
@@ -55,4 +62,20 @@ func writeFull(ctx context.Context, conn transport, timeout time.Duration, b []b
 		}
 	}
 	return nil
+}
+
+func interruptDeadline(ctx context.Context, set func(time.Time) error) func() {
+	var done sync.WaitGroup
+	done.Add(1)
+	stop := context.AfterFunc(ctx, func() {
+		_ = set(time.Now())
+		done.Done()
+	})
+	return func() {
+		if stop() {
+			done.Done()
+		}
+		done.Wait()
+		_ = set(time.Time{})
+	}
 }

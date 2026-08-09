@@ -53,6 +53,45 @@ func TestWriteFullHandlesShortWrites(t *testing.T) {
 	}
 }
 
+func TestInterruptDeadlineWaitsForCallback(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	cleanup := interruptDeadline(ctx, func(deadline time.Time) error {
+		if !deadline.IsZero() {
+			close(started)
+			<-release
+		}
+		return nil
+	})
+	cancel()
+	<-started
+	done := make(chan struct{})
+	go func() {
+		cleanup()
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("cleanup returned while deadline callback was active")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	<-done
+}
+
+func BenchmarkWriteFull(b *testing.B) {
+	conn := &shortTransport{step: 1024}
+	payload := make([]byte, 1024)
+	b.ReportAllocs()
+	for b.Loop() {
+		conn.Reset()
+		if err := writeFull(context.Background(), conn, time.Second, payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestClientCloseInterruptsFrameRead(t *testing.T) {
 	conn, peer := net.Pipe()
 	defer peer.Close()
