@@ -44,14 +44,13 @@ const (
 )
 
 type mediaFrame struct {
-	packet   rtp.Packet
-	track    mediaTrack
-	keyframe bool
-	samples  uint32
+	packet  *rtp.Packet
+	track   mediaTrack
+	samples uint32
 }
 
 func (f mediaFrame) valid() bool {
-	return f.packet.Payload != nil
+	return f.packet != nil
 }
 
 type mediaPipeline struct {
@@ -208,8 +207,8 @@ func (m *mediaPipeline) videoFrame(packet baichuan.MediaPacket) (mediaFrame, err
 		return mediaFrame{}, mediaErrorf("reolink: video timestamp: %w", err)
 	}
 	return mediaFrame{
-		track: trackVideo, keyframe: packet.Kind == baichuan.MediaVideoI,
-		packet: rtp.Packet{Header: rtp.Header{Timestamp: timestamp}, Payload: payload},
+		track:  trackVideo,
+		packet: &rtp.Packet{Header: rtp.Header{Timestamp: timestamp}, Payload: payload},
 	}, nil
 }
 
@@ -255,7 +254,7 @@ func (m *mediaPipeline) audioFrame(packet baichuan.MediaPacket) (mediaFrame, err
 	}
 	frame := mediaFrame{
 		track:   trackAudio,
-		packet:  rtp.Packet{Header: rtp.Header{Timestamp: m.audioTS}, Payload: payload},
+		packet:  &rtp.Packet{Header: rtp.Header{Timestamp: m.audioTS}, Payload: payload},
 		samples: samples,
 	}
 	m.audioTS += samples

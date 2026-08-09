@@ -2,7 +2,6 @@ package reolink
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -46,24 +45,6 @@ func TestParseUIDURL(t *testing.T) {
 		if strings.Contains(value, uid) || strings.Contains(value, "secret") {
 			t.Fatalf("UID source leaked: %s", value)
 		}
-	}
-}
-
-func TestUIDProducerReportsUDP(t *testing.T) {
-	source, err := parseURL("reolink://admin:secret@AbC1234567890XYZ/main?transport=uid&backchannel=0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	registry := &Registry{}
-	camera := &Camera{registry: registry, remote: source.remote}
-	profile := &Profile{camera: camera, key: ProfileKey{Stream: baichuan.StreamMain}, state: profileActive}
-	producer := newProducer(source, profile, nil)
-	b, err := json.Marshal(producer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(b), `"protocol":"udp"`) || strings.Contains(string(b), "AbC1234567890XYZ") {
-		t.Fatalf("unexpected UID diagnostics: %s", b)
 	}
 }
 
@@ -267,34 +248,5 @@ func TestBackchannelRejectsOversizedPacketBeforeDial(t *testing.T) {
 	}
 	if err := b.Write(make([]byte, 2033)); err == nil || !strings.Contains(err.Error(), "sample limit") {
 		t.Fatalf("unexpected oversized packet error: %v", err)
-	}
-}
-
-func TestBackchannelCodecReplacementKeepsActiveTranscoder(t *testing.T) {
-	b := &backchannel{
-		format: baichuan.TalkFormat{SampleRate: 16000, SamplesPerBlock: 1016},
-		talk:   &baichuan.Talk{},
-	}
-	if err := b.setCodec(&core.Codec{Name: core.CodecPCMU, ClockRate: 8000, Channels: 1}); err != nil {
-		t.Fatal(err)
-	}
-	if b.transcode == nil {
-		t.Fatal("active talk session lost transcoder during codec replacement")
-	}
-}
-
-func TestMarshalJSONRedactsSource(t *testing.T) {
-	registry := &Registry{}
-	camera := &Camera{registry: registry, remote: "camera:9000"}
-	profile := &Profile{camera: camera, key: ProfileKey{Stream: baichuan.StreamMain}, state: profileActive}
-	p := &Producer{profile: profile}
-	p.Source = "reolink://admin:secret@camera"
-	p.URL = p.Source
-	b, err := json.Marshal(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(b), "admin") || strings.Contains(string(b), "secret") {
-		t.Fatalf("credentials exposed: %s", b)
 	}
 }

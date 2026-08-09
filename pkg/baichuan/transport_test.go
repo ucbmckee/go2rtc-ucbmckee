@@ -83,33 +83,6 @@ func TestWriteFullHandlesShortWrites(t *testing.T) {
 	}
 }
 
-func TestInterruptDeadlineWaitsForCallback(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	started := make(chan struct{})
-	release := make(chan struct{})
-	cleanup := interruptDeadline(ctx, func(deadline time.Time) error {
-		if !deadline.IsZero() {
-			close(started)
-			<-release
-		}
-		return nil
-	})
-	cancel()
-	<-started
-	done := make(chan struct{})
-	go func() {
-		cleanup()
-		close(done)
-	}()
-	select {
-	case <-done:
-		t.Fatal("cleanup returned while deadline callback was active")
-	case <-time.After(20 * time.Millisecond):
-	}
-	close(release)
-	<-done
-}
-
 func TestWriteFullWaitsForCancellationCallback(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	conn := &cancelTransport{

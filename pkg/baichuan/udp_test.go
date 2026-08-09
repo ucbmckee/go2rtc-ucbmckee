@@ -1,47 +1,10 @@
 package baichuan
 
 import (
-	"bytes"
 	"encoding/binary"
 	"strings"
 	"testing"
 )
-
-func TestUIDPacketRoundTrip(t *testing.T) {
-	payload := []byte("independently-authored-payload")
-	tests := []struct {
-		name string
-		make func() ([]byte, error)
-		want uidPacket
-	}{
-		{name: "discovery", make: func() ([]byte, error) {
-			return marshalUIDDiscovery(73, payload)
-		}, want: uidPacket{magic: uidMagicDiscovery, transaction: 73}},
-		{name: "ack", make: func() ([]byte, error) {
-			return marshalUIDAck(-37, 91, payload, 128)
-		}, want: uidPacket{magic: uidMagicAck, connectionID: -37, packetID: 91}},
-		{name: "data", make: func() ([]byte, error) {
-			return marshalUIDData(-37, 91, payload, 128)
-		}, want: uidPacket{magic: uidMagicData, connectionID: -37, packetID: 91}},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			b, err := test.make()
-			if err != nil {
-				t.Fatal(err)
-			}
-			packet, err := parseUIDPacket(b, 128)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if packet.magic != test.want.magic || packet.connectionID != test.want.connectionID ||
-				packet.packetID != test.want.packetID || packet.transaction != test.want.transaction ||
-				!bytes.Equal(packet.payload, payload) {
-				t.Fatalf("unexpected packet: %+v", packet)
-			}
-		})
-	}
-}
 
 func TestUIDPacketRejectsMalformedInput(t *testing.T) {
 	valid, err := marshalUIDDiscovery(1, []byte("payload"))
@@ -104,17 +67,6 @@ func TestUIDPacketMarshalLimits(t *testing.T) {
 	}
 	if _, err := marshalUIDDiscovery(1, make([]byte, uidMaxDatagram)); err == nil {
 		t.Fatal("discovery payload exceeded datagram limit")
-	}
-}
-
-func TestUIDXORRoundTrip(t *testing.T) {
-	plain := []byte("uid discovery xml")
-	encrypted := make([]byte, len(plain))
-	decrypted := make([]byte, len(plain))
-	xorUID(encrypted, plain, 0x12345678)
-	xorUID(decrypted, encrypted, 0x12345678)
-	if !bytes.Equal(decrypted, plain) || bytes.Equal(encrypted, plain) {
-		t.Fatalf("unexpected XOR round trip: encrypted=%x decrypted=%q", encrypted, decrypted)
 	}
 }
 

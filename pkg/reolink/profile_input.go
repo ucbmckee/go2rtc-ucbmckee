@@ -13,6 +13,7 @@ import (
 type profileInput interface {
 	Read(context.Context) (baichuan.MediaPacket, error)
 	ProbeTalk(context.Context, uint8) (baichuan.TalkFormat, error)
+	Discovery() discoverySnapshot
 	Close() error
 }
 
@@ -25,10 +26,6 @@ type discoverySnapshot struct {
 	capabilities     baichuan.Capabilities
 	deviceStatus     string
 	capabilityStatus string
-}
-
-type discoveryInput interface {
-	Discovery() discoverySnapshot
 }
 
 type discoveryClient interface {

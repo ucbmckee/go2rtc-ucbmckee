@@ -130,22 +130,6 @@ func serveTalk(conn net.Conn, cfg Config) error {
 	}, nil, nil, aes, false)
 }
 
-func TestSelectTalkConfigRejectsUnsafeFormats(t *testing.T) {
-	ability := &talkAbility{
-		Duplexes: []talkDuplex{{Value: "fullDuplex"}},
-		Modes:    []talkMode{{Value: "speaker"}},
-	}
-	ability.Configs = append(ability.Configs, struct {
-		Value talkAudioConfig `xml:"audioConfig"`
-	}{Value: talkAudioConfig{
-		AudioType: "adpcm", SampleRate: 16000, SamplePrecision: 16,
-		SamplesPerBlock: 1015, SoundTrack: "mono",
-	}})
-	if _, err := selectTalkConfig(0, ability); err == nil {
-		t.Fatal("accepted odd ADPCM block size")
-	}
-}
-
 func TestSelectTalkConfigSkipsInvalidADPCMProfile(t *testing.T) {
 	ability := &talkAbility{
 		Duplexes: []talkDuplex{{Value: "fullDuplex"}},

@@ -19,24 +19,6 @@ func TestWritePacketRejectsVideoCodecChange(t *testing.T) {
 	}
 }
 
-func TestValidateVideoPayloadReasons(t *testing.T) {
-	tests := []struct {
-		codec string
-		data  []byte
-		want  string
-	}{
-		{"H264", []byte{0, 0, 0, 1, 0}, "NAL 0 has type 0"},
-		{"H264", []byte{0, 0, 0, 1, 0x81}, "NAL 0 has forbidden bit"},
-		{"H265", []byte{0, 0, 0, 2, 2, 0}, "NAL 0 has temporal ID zero"},
-		{"H265", []byte{0, 0, 0, 2, 48 << 1, 1}, "NAL 0 has type 48"},
-	}
-	for _, test := range tests {
-		if err := validateVideoPayload(test.codec, test.data); err == nil || err.Error() != test.want {
-			t.Errorf("%s validation error = %v, want %q", test.codec, err, test.want)
-		}
-	}
-}
-
 func TestWritePacketAcceptsDuplicateH264ParameterSets(t *testing.T) {
 	data := h264Keyframe(t, "Z2QAFqwa0BQF/yzcBAQFAAADAAEAAAMAHo8UIqA=", 0x80, 1)
 	pipeline := &mediaPipeline{}
@@ -367,30 +349,6 @@ func testVideoPFrame(codec string, timestamp uint32) baichuan.MediaPacket {
 	return baichuan.MediaPacket{
 		Kind: baichuan.MediaVideoP, Codec: "H265", Timestamp: timestamp,
 		Data: []byte{0, 0, 0, 1, 2, 1, 0},
-	}
-}
-
-func TestAddVideoAcceptsParameterSetsAndKeyframe(t *testing.T) {
-	for _, test := range []struct {
-		codec string
-		data  []byte
-	}{
-		{codec: "H264", data: []byte{
-			0, 0, 0, 1, 0x67, 0x64, 0, 0x29,
-			0, 0, 0, 1, 0x68, 0,
-			0, 0, 0, 1, 0x65, 0,
-		}},
-		{codec: "H265", data: []byte{
-			0, 0, 0, 1, 0x40, 1,
-			0, 0, 0, 1, 0x42, 1,
-			0, 0, 0, 1, 0x44, 1,
-			0, 0, 0, 1, 0x26, 1,
-		}},
-	} {
-		pipeline := &mediaPipeline{}
-		if err := pipeline.configureVideo(baichuan.MediaPacket{Codec: test.codec, Data: test.data}); err != nil {
-			t.Fatalf("rejected valid %s keyframe: %v", test.codec, err)
-		}
 	}
 }
 

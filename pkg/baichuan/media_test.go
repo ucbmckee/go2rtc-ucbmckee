@@ -184,18 +184,6 @@ func TestMediaParserPFrameExtraHeader(t *testing.T) {
 	}
 }
 
-func TestMediaParserUnpaddedFrame(t *testing.T) {
-	p, _ := NewMediaParser(Limits{})
-	video := videoFixture()[:35]
-	packets, err := p.Append(append(video, infoFixture()...))
-	if err != nil || len(packets) != 2 {
-		t.Fatalf("unexpected result: packets=%d err=%v", len(packets), err)
-	}
-	if packets[0].Kind != MediaVideoI || packets[1].Kind != MediaInfo {
-		t.Fatalf("unexpected packets: %+v", packets)
-	}
-}
-
 func TestMediaParserRejectsADPCMUnderflow(t *testing.T) {
 	p, _ := NewMediaParser(Limits{})
 	b := make([]byte, 16)

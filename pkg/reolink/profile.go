@@ -122,9 +122,7 @@ func (p *Profile) run() {
 	}
 	p.mu.Lock()
 	p.input = input
-	if source, ok := input.(discoveryInput); ok {
-		p.discovery = source.Discovery()
-	}
+	p.discovery = input.Discovery()
 	p.mu.Unlock()
 
 	var probe mediaProbe
@@ -215,7 +213,7 @@ func (p *Profile) replay(probe mediaProbe) error {
 			return err
 		}
 		if frame.valid() {
-			p.writeFrame(&frame)
+			p.writeFrame(frame)
 		}
 	}
 	return nil
@@ -253,18 +251,18 @@ func (p *Profile) read(input profileInput) error {
 			return err
 		}
 		if frame.valid() {
-			p.writeFrame(&frame)
+			p.writeFrame(frame)
 		}
 	}
 }
 
-func (p *Profile) writeFrame(frame *mediaFrame) {
+func (p *Profile) writeFrame(frame mediaFrame) {
 	if frame.track == trackVideo && p.video != nil {
 		p.videoFrames.Add(1)
-		p.video.WriteRTP(&frame.packet)
+		p.video.WriteRTP(frame.packet)
 	} else if frame.track == trackAudio && p.audio != nil {
 		p.audioSamples.Add(uint64(frame.samples))
-		p.audio.WriteRTP(&frame.packet)
+		p.audio.WriteRTP(frame.packet)
 	}
 }
 

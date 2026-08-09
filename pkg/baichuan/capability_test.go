@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +21,7 @@ func TestParseCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := value.ObservedChannels, []uint8{0, 1}; !equalUint8(got, want) {
+	if got, want := value.ObservedChannels, []uint8{0, 1}; !slices.Equal(got, want) {
 		t.Fatalf("channels = %v, want %v", got, want)
 	}
 	if got := value.Access("version"); got != CapabilityReadWrite {
@@ -222,7 +223,7 @@ func TestClientDiscoveryFailuresDoNotClosePreview(t *testing.T) {
 			cameraErr <- err
 			return
 		}
-		cameraErr <- servePreviewSession(cameraConn, cfg, aes)
+		cameraErr <- servePreviewSession(cameraConn, cfg, aes, previewRoute{stream: StreamMain})
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -263,16 +264,4 @@ func TestClientDiscoveryFailuresDoNotClosePreview(t *testing.T) {
 	if err = <-cameraErr; err != nil {
 		t.Fatal(err)
 	}
-}
-
-func equalUint8(a, b []uint8) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

@@ -79,7 +79,6 @@ type uidConn struct {
 	nextReceive  uint32
 	received     bool
 	ackDirty     bool
-	receiveCount int
 
 	pool sync.Pool
 }

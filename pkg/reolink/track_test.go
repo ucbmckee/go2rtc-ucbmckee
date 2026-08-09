@@ -56,7 +56,7 @@ func TestParseURLRejectsInvalidTrackSelection(t *testing.T) {
 	}
 }
 
-func TestProfileSuppressesVideoTrack(t *testing.T) {
+func TestAudioOnlyProfileRetainsLatestStartupPacket(t *testing.T) {
 	opener := &fakeProfileOpener{}
 	registry := testRegistry(opener.open, sessionBudget{main: 2, other: 10})
 	producer, err := registry.Dial("reolink://admin:secret@camera/main?video=0&backchannel=0")
@@ -66,31 +66,6 @@ func TestProfileSuppressesVideoTrack(t *testing.T) {
 	if len(producer.Medias) != 1 || producer.Medias[0].Kind != core.KindAudio ||
 		len(producer.Receivers) != 1 || producer.profile.video != nil || producer.profile.audio == nil {
 		t.Fatal("video-suppressed profile advertised unexpected tracks")
-	}
-	audioPackets := make(chan *rtp.Packet, 1)
-	(&core.Node{Input: func(packet *rtp.Packet) { audioPackets <- packet }}).WithParent(&producer.Receivers[0].Node)
-	done := make(chan error, 1)
-	go func() { done <- producer.Start() }()
-	select {
-	case <-audioPackets:
-	case <-time.After(time.Second):
-		t.Fatal("audio-only startup packet was not replayed")
-	}
-	opener.input(0).results <- inputResult{err: io.ErrUnexpectedEOF}
-	if err = <-done; !errors.Is(err, io.ErrUnexpectedEOF) {
-		t.Fatalf("unexpected terminal error: %v", err)
-	}
-	if err = producer.Stop(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestAudioOnlyProfileRetainsLatestStartupPacket(t *testing.T) {
-	opener := &fakeProfileOpener{}
-	registry := testRegistry(opener.open, sessionBudget{main: 2, other: 10})
-	producer, err := registry.Dial("reolink://admin:secret@camera/main?video=0&backchannel=0")
-	if err != nil {
-		t.Fatal(err)
 	}
 	input := opener.input(0)
 	bytes := producer.profile.recvBytes.Load()
@@ -136,7 +111,7 @@ func TestAudioOnlyProfileRetainsLatestStartupPacket(t *testing.T) {
 	}
 }
 
-func TestProfileSuppressesAudioTrack(t *testing.T) {
+func TestProfileDeliversOnlyEnabledTracks(t *testing.T) {
 	opener := &fakeProfileOpener{}
 	registry := testRegistry(opener.open, sessionBudget{main: 2, other: 10})
 	producer, err := registry.Dial("reolink://admin:secret@camera/main?audio=0&backchannel=0")
@@ -146,18 +121,6 @@ func TestProfileSuppressesAudioTrack(t *testing.T) {
 	if len(producer.Medias) != 1 || producer.Medias[0].Kind != core.KindVideo ||
 		len(producer.Receivers) != 1 || producer.profile.video == nil || producer.profile.audio != nil {
 		t.Fatal("audio-suppressed profile advertised unexpected tracks")
-	}
-	if err = producer.Stop(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestProfileDeliversOnlyEnabledTracks(t *testing.T) {
-	opener := &fakeProfileOpener{}
-	registry := testRegistry(opener.open, sessionBudget{main: 2, other: 10})
-	producer, err := registry.Dial("reolink://admin:secret@camera/main?audio=0&backchannel=0")
-	if err != nil {
-		t.Fatal(err)
 	}
 	videoPackets := make(chan *rtp.Packet, 11)
 	(&core.Node{Input: func(packet *rtp.Packet) { videoPackets <- packet }}).WithParent(&producer.Receivers[0].Node)

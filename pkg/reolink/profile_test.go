@@ -39,6 +39,8 @@ func TestProducerDiagnosticsAreRedacted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	producer.Source = "reolink://sentinel-user:sentinel-pass@camera"
+	producer.URL = producer.Source
 	data, err := json.Marshal(producer)
 	if err != nil {
 		t.Fatal(err)
@@ -92,35 +94,6 @@ func TestProducerDiagnosticsDuringDelivery(t *testing.T) {
 	_ = producer.Stop()
 }
 
-func TestProducerContinuesAfterDuplicateH264ParameterSets(t *testing.T) {
-	opener := &fakeProfileOpener{}
-	registry := testRegistry(opener.open, sessionBudget{main: 2, other: 10})
-	producer, err := registry.Dial("reolink://admin:secret@camera/main?backchannel=0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- producer.Start() }()
-	refresh := testH264Keyframe(1_050_000)
-	refresh.Data = append(append([]byte(nil), refresh.Data[:8]...), refresh.Data...)
-	input := opener.input(0)
-	frames := producer.profile.videoFrames.Load()
-	input.results <- inputResult{packet: refresh}
-	waitFor(t, func() bool { return producer.profile.videoFrames.Load() == frames+1 })
-	select {
-	case err = <-done:
-		t.Fatalf("duplicate parameter sets stopped producer: %v", err)
-	default:
-	}
-	input.results <- inputResult{err: io.ErrUnexpectedEOF}
-	if err = <-done; !errors.Is(err, io.ErrUnexpectedEOF) {
-		t.Fatalf("unexpected terminal error: %v", err)
-	}
-	if err = producer.Stop(); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestProducerResyncsWithoutRestartAfterInvalidVideo(t *testing.T) {
 	opener := &fakeProfileOpener{}
 	registry := testRegistry(opener.open, sessionBudget{main: 2, other: 10})
@@ -160,11 +133,11 @@ func TestProfileWritesFrameDirectlyToReceiver(t *testing.T) {
 	(&core.Node{Input: func(packet *rtp.Packet) {
 		received = packet
 	}}).WithParent(&profile.video.Node)
-	frame := &mediaFrame{track: trackVideo, packet: rtp.Packet{
+	frame := mediaFrame{track: trackVideo, packet: &rtp.Packet{
 		Header: rtp.Header{Timestamp: 7}, Payload: []byte{1, 2, 3},
 	}}
 	profile.writeFrame(frame)
-	if received != &frame.packet {
+	if received != frame.packet {
 		t.Fatal("profile copied the RTP packet")
 	}
 }

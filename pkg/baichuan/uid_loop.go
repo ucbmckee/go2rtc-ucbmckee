@@ -103,7 +103,6 @@ func (s *uidConn) handleUIDData(packet uidPacket, b *uidBuffer) bool {
 		s.receiveMu.Unlock()
 		return false
 	}
-	s.receiveCount++
 	*slot = uidReceiveSlot{
 		packetID: packet.packetID,
 		chunk:    uidChunk{buffer: b, data: packet.payload},
@@ -117,7 +116,6 @@ func (s *uidConn) handleUIDData(packet uidPacket, b *uidBuffer) bool {
 		}
 		chunk := slot.chunk
 		*slot = uidReceiveSlot{}
-		s.receiveCount--
 		s.nextReceive++
 		s.received = true
 		select {

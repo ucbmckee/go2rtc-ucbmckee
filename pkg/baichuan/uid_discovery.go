@@ -87,7 +87,7 @@ func discoverUID(ctx context.Context, uid, local, broadcast string, timeout time
 	if err != nil {
 		return nil, fmt.Errorf("baichuan: listen for UID discovery: %w", err)
 	}
-	defer interruptDeadline(ctx, conn.SetReadDeadline)()
+	defer interruptDeadline(ctx, conn.SetDeadline)()
 	if err = enableUIDBroadcast(conn); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("baichuan: enable UID broadcast: %w", err)
@@ -115,6 +115,13 @@ func discoverUID(ctx context.Context, uid, local, broadcast string, timeout time
 	}
 
 	deadline := time.Now().Add(timeout)
+	if value, ok := ctx.Deadline(); ok && value.Before(deadline) {
+		deadline = value
+	}
+	if err = conn.SetWriteDeadline(deadline); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("baichuan: set UID discovery write deadline: %w", err)
+	}
 	for {
 		if err = ctx.Err(); err != nil {
 			_ = conn.Close()
