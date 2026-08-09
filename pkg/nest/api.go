@@ -489,20 +489,14 @@ func (a *API) StopRTSPStream() error {
 }
 
 func (a *API) StopWebRTCStream() error {
-	a.streamMu.Lock()
+	a.streamMu.RLock()
 	projectID, deviceID, sessionID := a.StreamProjectID, a.StreamDeviceID, a.StreamSessionID
+	generation := a.streamGeneration
 	if projectID == "" || deviceID == "" || sessionID == "" {
-		a.streamMu.Unlock()
+		a.streamMu.RUnlock()
 		return errors.New("nest: tried to stop webrtc stream without a project, device, or session ID")
 	}
-	a.StreamProjectID = ""
-	a.StreamDeviceID = ""
-	a.StreamSessionID = ""
-	a.StreamToken = ""
-	a.StreamExtensionToken = ""
-	a.StreamExpiresAt = time.Time{}
-	a.streamGeneration++
-	a.streamMu.Unlock()
+	a.streamMu.RUnlock()
 
 	var reqv struct {
 		Command string `json:"command"`
@@ -536,6 +530,18 @@ func (a *API) StopWebRTCStream() error {
 	if res.StatusCode != 200 && res.StatusCode != http.StatusNotFound {
 		return errors.New("nest: wrong status: " + res.Status)
 	}
+
+	a.streamMu.Lock()
+	if a.streamGeneration == generation {
+		a.StreamProjectID = ""
+		a.StreamDeviceID = ""
+		a.StreamSessionID = ""
+		a.StreamToken = ""
+		a.StreamExtensionToken = ""
+		a.StreamExpiresAt = time.Time{}
+		a.streamGeneration++
+	}
+	a.streamMu.Unlock()
 	return nil
 }
 

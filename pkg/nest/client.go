@@ -23,6 +23,7 @@ type WebRTCClient struct {
 	h264       atomic.Pointer[h264Probe]
 	pliOnce    sync.Once
 	requestPLI func(*core.Media) error
+	pliDelays  []time.Duration
 	done       chan struct{}
 	stopOnce   sync.Once
 	stopErr    error
@@ -95,10 +96,9 @@ func (c *WebRTCClient) GetMedias() []*core.Media {
 
 func (c *WebRTCClient) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
 	if probe := c.h264.Load(); probe != nil && probe.media == media && codec != nil && probe.track.Codec.Match(codec) {
-		// WebRTC Conn calls GetTrack while binding the remote track, before a
-		// downstream consumer exists. The bounded PLI sequence is intentional:
-		// Nest may otherwise withhold SPS/PPS/IDR until explicitly requested.
-		probe.handoffStarted.Store(true)
+		// Request a bounded keyframe sequence when the parent first attaches
+		// downstream consumers to the pre-created Nest receiver.
+		probe.beginHandoff()
 		c.pliOnce.Do(func() { go c.requestKeyframes(probe) })
 		return probe.track, nil
 	}
@@ -112,7 +112,9 @@ func (c *WebRTCClient) AddTrack(media *core.Media, codec *core.Codec, track *cor
 func (c *WebRTCClient) Start() error {
 	c.api.StartExtendStreamTimer()
 	go c.monitorVideo()
-	return c.conn.Start()
+	err := c.conn.Start()
+	_ = c.Stop()
+	return err
 }
 
 func (c *WebRTCClient) monitorVideo() {
@@ -180,9 +182,6 @@ func (c *WebRTCClient) Stop() error {
 		close(c.done)
 		c.api.StopExtendStreamTimer()
 		c.stopErr = c.conn.Stop()
-		// Release Google's media session after the local peer is closed. A
-		// failed remote cleanup must not turn a successful local stop into an
-		// error; the session will still expire server-side.
 		_ = c.api.StopWebRTCStream()
 	})
 	return c.stopErr
@@ -217,9 +216,13 @@ func rtcConn(nestAPI *API, rawURL, projectID, deviceID string) (*WebRTCClient, e
 		return nil, err
 	}
 	ok := false
+	session := false
 	defer func() {
 		if !ok {
 			_ = pc.Close()
+			if session {
+				_ = nestAPI.StopWebRTCStream()
+			}
 		}
 	}()
 
@@ -245,6 +248,7 @@ func rtcConn(nestAPI *API, rawURL, projectID, deviceID string) (*WebRTCClient, e
 	if err != nil {
 		return nil, err
 	}
+	session = true
 	if err = conn.SetAnswer(answer); err != nil {
 		return nil, err
 	}
@@ -277,9 +281,11 @@ func (c *WebRTCClient) prepareH264Probe() error {
 }
 
 func (c *WebRTCClient) requestKeyframes(probe *h264Probe) {
-	c.requestKeyframesAfter(probe, []time.Duration{
-		100 * time.Millisecond, 500 * time.Millisecond, 1500 * time.Millisecond,
-	})
+	delays := c.pliDelays
+	if delays == nil {
+		delays = []time.Duration{100 * time.Millisecond, 500 * time.Millisecond, 1500 * time.Millisecond}
+	}
+	c.requestKeyframesAfter(probe, delays)
 }
 
 func (c *WebRTCClient) requestKeyframesAfter(probe *h264Probe, delays []time.Duration) {

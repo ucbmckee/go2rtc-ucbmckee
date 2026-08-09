@@ -2,8 +2,13 @@ package nest
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"testing"
 	"time"
+
+	go2rtcwebrtc "github.com/AlexxIT/go2rtc/pkg/webrtc"
+	pion "github.com/pion/webrtc/v4"
 )
 
 func TestNewAPIIsolatesStreamState(t *testing.T) {
@@ -97,4 +102,145 @@ func TestExtendStreamTimerJoinsCanceledRequest(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timer stop did not join canceled request")
 	}
+}
+
+func TestStopWebRTCStreamClearsSessionAfterRequest(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	useHTTPTransport(t, func(*http.Request) (*http.Response, error) {
+		close(started)
+		<-release
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       http.NoBody,
+		}, nil
+	})
+
+	api := testStreamAPI()
+	done := make(chan error, 1)
+	go func() { done <- api.StopWebRTCStream() }()
+	<-started
+	api.streamMu.RLock()
+	sessionID := api.StreamSessionID
+	api.streamMu.RUnlock()
+	if sessionID != "session" {
+		t.Fatal("session was cleared before the stop request completed")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	api.streamMu.RLock()
+	defer api.streamMu.RUnlock()
+	if api.StreamProjectID != "" || api.StreamDeviceID != "" || api.StreamSessionID != "" || api.streamGeneration != 2 {
+		t.Fatal("completed stop did not clear the session")
+	}
+}
+
+func TestStopWebRTCStreamRetainsSessionOnFailure(t *testing.T) {
+	useHTTPTransport(t, func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("test request failure")
+	})
+	api := testStreamAPI()
+	if err := api.StopWebRTCStream(); err == nil {
+		t.Fatal("request failure was not returned")
+	}
+	if api.StreamSessionID != "session" || api.streamGeneration != 1 {
+		t.Fatal("failed stop discarded the session identity")
+	}
+}
+
+func TestStopWebRTCStreamDoesNotClearReplacement(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	useHTTPTransport(t, func(*http.Request) (*http.Response, error) {
+		close(started)
+		<-release
+		return &http.Response{
+			StatusCode: http.StatusNotFound,
+			Status:     "404 Not Found",
+			Body:       http.NoBody,
+		}, nil
+	})
+
+	api := testStreamAPI()
+	done := make(chan error, 1)
+	go func() { done <- api.StopWebRTCStream() }()
+	<-started
+	api.streamMu.Lock()
+	api.StreamSessionID = "replacement"
+	api.streamGeneration++
+	api.streamMu.Unlock()
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if api.StreamSessionID != "replacement" || api.streamGeneration != 2 {
+		t.Fatal("old stop request cleared the replacement session")
+	}
+}
+
+func TestWebRTCClientStartWaitsForRemoteCleanup(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	useHTTPTransport(t, func(*http.Request) (*http.Response, error) {
+		close(started)
+		<-release
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       http.NoBody,
+		}, nil
+	})
+
+	rtcAPI, err := go2rtcwebrtc.NewAPI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc, err := rtcAPI.NewPeerConnection(pion.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := go2rtcwebrtc.NewConn(pc)
+	client := &WebRTCClient{conn: conn, api: testStreamAPI(), done: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() { done <- client.Start() }()
+	if err = conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("remote cleanup did not start")
+	}
+	select {
+	case <-done:
+		t.Fatal("Start returned before remote cleanup completed")
+	default:
+	}
+	close(release)
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testStreamAPI() *API {
+	return &API{
+		Token: "token", StreamProjectID: "project", StreamDeviceID: "device",
+		StreamSessionID: "session", StreamExpiresAt: time.Now().Add(time.Hour), streamGeneration: 1,
+	}
+}
+
+func useHTTPTransport(t *testing.T, fn roundTripFunc) {
+	t.Helper()
+	previous := http.DefaultTransport
+	http.DefaultTransport = fn
+	t.Cleanup(func() { http.DefaultTransport = previous })
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
 }
