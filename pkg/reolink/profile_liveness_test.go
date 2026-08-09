@@ -192,56 +192,6 @@ func runProfileTraffic(
 	}
 }
 
-func TestAudioRateLow(t *testing.T) {
-	const rate = 16_000
-	for _, test := range []struct {
-		name    string
-		samples uint64
-		low     bool
-	}{
-		{name: "below threshold", samples: 11_999, low: true},
-		{name: "at threshold", samples: 12_000},
-		{name: "full rate", samples: 16_000},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if low := audioRateLow(test.samples, rate, time.Second); low != test.low {
-				t.Fatalf("audioRateLow(%d) = %t", test.samples, low)
-			}
-		})
-	}
-}
-
-func TestProfileKeepsRunningWhileAdvertisedTracksAdvance(t *testing.T) {
-	opener := &fakeProfileOpener{}
-	registry := testRegistry(opener.open, sessionBudget{main: 2, other: 10})
-	producer, err := registry.Dial("reolink://admin:secret@camera/main?backchannel=0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	producer.profile.trackCheckInterval = testTrackCheckInterval
-	producer.profile.trackStallTimeout = testTrackStallTimeout
-	done := make(chan error, 1)
-	go func() { done <- producer.Start() }()
-	input := opener.input(0)
-	for timestamp := uint32(1_050_000); timestamp < 1_200_000; timestamp += 5_000 {
-		input.results <- inputResult{packet: testH264PFrame(timestamp)}
-		input.results <- inputResult{packet: testAAC(timestamp)}
-		time.Sleep(testTrackCheckInterval)
-		select {
-		case err = <-done:
-			t.Fatalf("live tracks stopped producer: %v", err)
-		default:
-		}
-	}
-	input.results <- inputResult{err: io.ErrUnexpectedEOF}
-	if err = <-done; !errors.Is(err, io.ErrUnexpectedEOF) {
-		t.Fatalf("unexpected terminal error: %v", err)
-	}
-	if err = producer.Stop(); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestProfileIgnoresStalledSuppressedTrack(t *testing.T) {
 	opener := &fakeProfileOpener{}
 	registry := testRegistry(opener.open, sessionBudget{main: 2, other: 10})

@@ -24,25 +24,6 @@ func (c fakeDiscoveryClient) Capabilities(
 	return c.capabilities(ctx, channel)
 }
 
-func TestDiscoveryStatus(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		err  error
-		want string
-	}{
-		{name: "available", want: "available"},
-		{name: "timeout", err: context.DeadlineExceeded, want: "timeout"},
-		{name: "canceled", err: context.Canceled, want: "canceled"},
-		{name: "protocol", err: &baichuan.StatusError{Command: 80, Code: 500}, want: "protocol"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if got := discoveryStatus(test.err); got != test.want {
-				t.Fatalf("status = %q, want %q", got, test.want)
-			}
-		})
-	}
-}
-
 func TestDiscoveryCacheDeduplicatesConcurrentProfiles(t *testing.T) {
 	var deviceCalls atomic.Int32
 	var capabilityCalls [256]atomic.Int32

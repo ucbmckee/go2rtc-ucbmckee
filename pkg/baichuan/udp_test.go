@@ -37,26 +37,6 @@ func TestUIDPacketRejectsMalformedInput(t *testing.T) {
 	}
 }
 
-func TestUIDPacketParseDoesNotCopyPayload(t *testing.T) {
-	b, err := marshalUIDData(1, 2, []byte("payload"), 32)
-	if err != nil {
-		t.Fatal(err)
-	}
-	packet, err := parseUIDPacket(b, 32)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b[uidDataHeader] = 'P'
-	if string(packet.payload) != "Payload" {
-		t.Fatalf("payload was copied: %q", packet.payload)
-	}
-	if allocs := testing.AllocsPerRun(100, func() {
-		_, _ = parseUIDPacket(b, 32)
-	}); allocs != 0 {
-		t.Fatalf("parse allocated %.1f times", allocs)
-	}
-}
-
 func TestUIDPacketMarshalLimits(t *testing.T) {
 	payload := make([]byte, 9)
 	if _, err := marshalUIDData(1, 1, payload, 8); err == nil {

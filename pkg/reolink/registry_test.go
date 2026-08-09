@@ -350,19 +350,6 @@ func TestRegistryScopesTalkProbeToConfiguredSource(t *testing.T) {
 	})
 }
 
-func TestSourceFormattingRedactsCredentials(t *testing.T) {
-	s, err := parseURL("reolink://sentinel-user:sentinel-pass@camera/main")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, format := range []string{"%v", "%+v", "%#v", "%s", "%q"} {
-		text := fmt.Sprintf(format, s)
-		if stringsContainsAny(text, "sentinel-user", "sentinel-pass") {
-			t.Fatalf("credentials exposed by %s: %s", format, text)
-		}
-	}
-}
-
 func TestUIDCameraIdentityIsSecretAndRouteIndependent(t *testing.T) {
 	secret := [sha256.Size]byte{1}
 	registry := newRegistry(zerolog.Nop(), secret, nil, sessionBudget{})
@@ -411,6 +398,10 @@ func TestUIDRoutingSharesSessionBudget(t *testing.T) {
 }
 
 func TestAggregateFormattingRedactsCredentials(t *testing.T) {
+	source, err := parseURL("reolink://sentinel-user:sentinel-pass@camera/main?backchannel=0")
+	if err != nil {
+		t.Fatal(err)
+	}
 	opener := &fakeProfileOpener{}
 	registry := testRegistry(opener.open, sessionBudget{main: 2, other: 10})
 	producer, err := registry.Dial("reolink://sentinel-user:sentinel-pass@camera/main?backchannel=0")
@@ -419,21 +410,12 @@ func TestAggregateFormattingRedactsCredentials(t *testing.T) {
 	}
 	defer producer.Stop()
 
-	for _, value := range []any{registry, producer.profile.camera, producer.profile, producer} {
+	for _, value := range []any{source, registry, producer.profile.camera, producer.profile, producer} {
 		for _, format := range []string{"%v", "%+v", "%#v", "%s", "%q"} {
 			text := fmt.Sprintf(format, value)
-			if stringsContainsAny(text, "sentinel-user", "sentinel-pass") {
+			if strings.Contains(text, "sentinel-user") || strings.Contains(text, "sentinel-pass") {
 				t.Fatalf("credentials exposed by %T with %s: %s", value, format, text)
 			}
 		}
 	}
-}
-
-func stringsContainsAny(value string, items ...string) bool {
-	for _, item := range items {
-		if strings.Contains(value, item) {
-			return true
-		}
-	}
-	return false
 }

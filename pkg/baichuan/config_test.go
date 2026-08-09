@@ -8,42 +8,35 @@ import (
 )
 
 func TestConfigRedaction(t *testing.T) {
-	cfg := NewConfig("camera.local", "secret-user", "secret-password")
-	values := []string{
-		fmt.Sprintf("%v", cfg), fmt.Sprintf("%+v", cfg), fmt.Sprintf("%#v", cfg),
-		fmt.Sprintf("%s", cfg), fmt.Sprintf("%q", cfg),
-	}
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	values = append(values, string(data))
-	for _, value := range values {
-		if strings.Contains(value, "secret-user") || strings.Contains(value, "secret-password") {
-			t.Fatalf("credential leaked: %s", value)
-		}
-	}
-}
-
-func TestUIDConfigRedaction(t *testing.T) {
-	const uid = "SentinelCameraUID1"
-	cfg := NewUIDConfig(uid, "secret-user", "secret-password")
-	cfg.UIDLocalAddr = "192.0.2.28"
-	cfg.UIDBroadcastAddr = "198.51.100.255"
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, value := range []string{
-		fmt.Sprintf("%v", cfg), fmt.Sprintf("%+v", cfg), fmt.Sprintf("%#v", cfg), string(data),
+	uid := NewUIDConfig("SentinelCameraUID1", "secret-user", "secret-password")
+	uid.UIDLocalAddr = "192.0.2.28"
+	uid.UIDBroadcastAddr = "198.51.100.255"
+	for _, test := range []struct {
+		name    string
+		cfg     Config
+		secrets []string
+	}{
+		{name: "tcp", cfg: NewConfig("camera.local", "secret-user", "secret-password"), secrets: []string{"secret-user", "secret-password"}},
+		{name: "uid", cfg: uid, secrets: []string{"SentinelCameraUID1", "secret-user", "secret-password"}},
 	} {
-		if strings.Contains(value, uid) || strings.Contains(value, "secret-user") ||
-			strings.Contains(value, "secret-password") {
-			t.Fatalf("UID config leaked: %s", value)
+		data, err := json.Marshal(test.cfg)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	if _, err = cfg.normalized(); err != nil {
-		t.Fatal(err)
+		values := []string{
+			fmt.Sprintf("%v", test.cfg), fmt.Sprintf("%+v", test.cfg), fmt.Sprintf("%#v", test.cfg),
+			fmt.Sprintf("%s", test.cfg), fmt.Sprintf("%q", test.cfg), string(data),
+		}
+		for _, value := range values {
+			for _, secret := range test.secrets {
+				if strings.Contains(value, secret) {
+					t.Fatalf("%s config leaked %q", test.name, secret)
+				}
+			}
+		}
+		if _, err = test.cfg.normalized(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

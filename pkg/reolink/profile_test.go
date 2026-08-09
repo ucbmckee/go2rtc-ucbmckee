@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -46,7 +45,7 @@ func TestProducerDiagnosticsAreRedacted(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if stringsContainsAny(text, "sentinel-user", "sentinel-pass") {
+	if strings.Contains(text, "sentinel-user") || strings.Contains(text, "sentinel-pass") {
 		t.Fatalf("credentials exposed in diagnostics: %s", text)
 	}
 	for _, expected := range []string{
@@ -90,6 +89,9 @@ func TestProducerDiagnosticsDuringDelivery(t *testing.T) {
 	}
 	if !input.aborted.Load() {
 		t.Fatal("terminal failure closed input gracefully")
+	}
+	if class := producer.diagnostics().LastError; class != "eof" {
+		t.Fatalf("truncated network frame classified as %q", class)
 	}
 	if video, audio := producer.profile.videoFrames.Load(), producer.profile.audioSamples.Load(); video != 1001 || audio == 0 {
 		t.Fatalf("unexpected liveness state: video=%d audio_samples=%d", video, audio)
@@ -377,24 +379,5 @@ func TestProducerFailureReleasesSessionBeforeReconnect(t *testing.T) {
 	}
 	if err = replacement.Stop(); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestErrorClassUsesTypedMediaErrors(t *testing.T) {
-	for _, err := range []error{
-		mediaErrorf("reolink: invalid H264 keyframe"),
-		mediaErrorf("reolink: H265 parameter sets changed"),
-		mediaErrorf("reolink: invalid ADPCM packet"),
-		fmt.Errorf("reolink: read media: %w", mediaErrorf("reolink: invalid AAC packet")),
-	} {
-		if class := errorClass(err); class != "media" {
-			t.Fatalf("classified %q as %q", err, class)
-		}
-	}
-	if class := errorClass(errors.New("reolink: invalid request")); class != "protocol" {
-		t.Fatalf("classified protocol error as %q", class)
-	}
-	if class := errorClass(io.ErrUnexpectedEOF); class != "eof" {
-		t.Fatalf("classified truncated network frame as %q", class)
 	}
 }

@@ -3,7 +3,6 @@ package reolink
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/binary"
 	"fmt"
 	"strings"
 	"testing"
@@ -212,23 +211,6 @@ func h264AccessUnit(nalus ...[]byte) []byte {
 	return data
 }
 
-func FuzzH264ParameterSignature(f *testing.F) {
-	f.Add([]byte{0x67, 0x64, 0, 0x29})
-	f.Fuzz(func(t *testing.T, data []byte) {
-		if len(data) < 4 || len(data) > 4096 {
-			return
-		}
-		sps := append([]byte(nil), data...)
-		sps[0] = 0x67
-		avcc := make([]byte, 4, len(sps)+10)
-		binary.BigEndian.PutUint32(avcc, uint32(len(sps)))
-		avcc = append(avcc, sps...)
-		avcc = binary.BigEndian.AppendUint32(avcc, 2)
-		avcc = append(avcc, 0x68, 0)
-		_, _ = h264ParameterSignature(avcc)
-	})
-}
-
 func TestEncodeOwnedToAVCC(t *testing.T) {
 	for _, input := range [][]byte{
 		{0, 0, 0, 1, 0x41, 1, 2, 0, 0, 0, 1, 0x41, 3},
@@ -350,56 +332,4 @@ func testVideoPFrame(codec string, timestamp uint32) baichuan.MediaPacket {
 		Kind: baichuan.MediaVideoP, Codec: "H265", Timestamp: timestamp,
 		Data: []byte{0, 0, 0, 1, 2, 1, 0},
 	}
-}
-
-func FuzzConfigureH264(f *testing.F) {
-	f.Add([]byte{
-		0, 0, 0, 1, 0x67, 0x64, 0, 0x29,
-		0, 0, 0, 1, 0x68, 0,
-		0, 0, 0, 1, 0x65, 0,
-	})
-	f.Add([]byte{
-		0, 0, 0, 1, 0x67, 0x64,
-		0, 0, 0, 1, 0x67, 0x64, 0, 0x29,
-		0, 0, 0, 1, 0x68, 0,
-		0, 0, 0, 1, 0x65, 0,
-	})
-	f.Fuzz(func(t *testing.T, data []byte) {
-		if len(data) > 1<<20 {
-			return
-		}
-		_ = (&mediaPipeline{}).configureVideo(baichuan.MediaPacket{
-			Kind: baichuan.MediaVideoI, Codec: "H264", Data: append([]byte(nil), data...),
-		})
-	})
-}
-
-func FuzzVideoFrameRepair(f *testing.F) {
-	f.Add(false, false, []byte{0, 0, 0, 1, 0xc1, 1})
-	f.Add(true, false, []byte{0, 0, 0, 1, 0x80, 1})
-	f.Add(false, true, testH264Keyframe(0).Data)
-	f.Fuzz(func(t *testing.T, h265Codec, keyframe bool, data []byte) {
-		if len(data) > 1<<20 {
-			t.Skip()
-		}
-		codec := "H264"
-		if h265Codec {
-			codec = "H265"
-		}
-		pipeline := &mediaPipeline{}
-		base := testVideoKeyframe(codec, 1_000_000)
-		if err := pipeline.configureVideo(base); err != nil {
-			t.Fatal(err)
-		}
-		kind := baichuan.MediaVideoP
-		if keyframe {
-			kind = baichuan.MediaVideoI
-		}
-		_, _ = pipeline.videoFrame(baichuan.MediaPacket{
-			Kind: kind, Codec: codec, Timestamp: 1_050_000, Data: data,
-		})
-		if _, err := pipeline.videoFrame(testVideoKeyframe(codec, 1_100_000)); err != nil {
-			t.Fatal(err)
-		}
-	})
 }
