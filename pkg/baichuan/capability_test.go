@@ -17,64 +17,26 @@ func TestParseCapabilities(t *testing.T) {
 		`<streaming><subModule><channelId>1</channelId><abilityValue>live_ro</abilityValue></subModule>` +
 		`<subModule><channelId>0</channelId><abilityValue>live_rw, audio_ro, version_rw</abilityValue></subModule></streaming>` +
 		`</AbilityInfo></body>`)
-	value, err := parseCapabilities(body, 0)
+	value, err := parseCapabilities(body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, want := value.ObservedChannels, []uint8{0, 1}; !slices.Equal(got, want) {
 		t.Fatalf("channels = %v, want %v", got, want)
 	}
-	if got := value.Access("version"); got != CapabilityReadWrite {
-		t.Fatalf("version = %s", got)
-	}
-	if got := value.Access("audio"); got != CapabilityReadOnly {
-		t.Fatalf("audio = %s", got)
-	}
-	if got := value.Access("live"); got != CapabilityReadWrite {
-		t.Fatalf("live = %s", got)
-	}
-	if got := value.Access("missing"); got != 0 {
-		t.Fatalf("missing = %s", got)
-	}
 	clone := value.clone()
-	clone.ReadWrite[0] = "changed"
-	if value.ReadWrite[0] == "changed" {
+	clone.ObservedChannels[0] = 2
+	if value.ObservedChannels[0] == 2 {
 		t.Fatal("clone shares capability storage")
 	}
 }
 
 func TestParseCapabilitiesRejectsLimits(t *testing.T) {
-	if _, err := parseCapabilities(make([]byte, maxCapabilityBody+1), 0); err == nil {
+	if _, err := parseCapabilities(make([]byte, maxCapabilityBody+1)); err == nil {
 		t.Fatal("accepted oversized response")
 	}
-	if _, err := parseCapabilities([]byte(`<body/>`), 0); err == nil {
+	if _, err := parseCapabilities([]byte(`<body/>`)); err == nil {
 		t.Fatal("accepted response without AbilityInfo")
-	}
-	values := strings.Repeat("x_ro,", maxCapabilities+1)
-	if _, err := parseCapabilities([]byte(`<body><AbilityInfo><system><subModule><abilityValue>`+
-		values+`</abilityValue></subModule></system></AbilityInfo></body>`), 0); err == nil {
-		t.Fatal("accepted excessive capability count")
-	}
-}
-
-func TestParseCapability(t *testing.T) {
-	tests := []struct {
-		raw    string
-		name   string
-		access CapabilityAccess
-		ok     bool
-	}{
-		{" PTZType_RW ", "ptztype", CapabilityReadWrite, true},
-		{"motion_ro", "motion", CapabilityReadOnly, true},
-		{"missing", "", 0, false},
-		{"bad name_rw", "", 0, false},
-		{strings.Repeat("x", maxCapabilityName+1) + "_ro", "", 0, false},
-	}
-	for _, test := range tests {
-		name, access, ok := parseCapability(test.raw)
-		if name != test.name || access != test.access || ok != test.ok {
-			t.Fatalf("parseCapability(%q) = %q, %d, %t", test.raw, name, access, ok)
-		}
 	}
 }
 
@@ -126,7 +88,7 @@ func TestClientDiscoveryCachesResponses(t *testing.T) {
 			message := requests[command]
 			var payload string
 			if command == commandAbility {
-				payload = `<body><AbilityInfo><system><subModule><abilityValue>version_ro</abilityValue></subModule></system></AbilityInfo></body>`
+				payload = `<body><AbilityInfo><system><subModule><channelId>0</channelId><abilityValue>version_ro</abilityValue></subModule></system></AbilityInfo></body>`
 			} else {
 				payload = `<body><VersionInfo><type>E1 Zoom</type><itemNo>E340</itemNo></VersionInfo></body>`
 			}
@@ -166,14 +128,15 @@ func TestClientDiscoveryCachesResponses(t *testing.T) {
 		t.Fatalf("device = %+v, %v", device.value, device.err)
 	}
 	capabilities := <-capabilityDone
-	if capabilities.err != nil || capabilities.value.Access("version") != CapabilityReadOnly {
+	if capabilities.err != nil || !slices.Equal(capabilities.value.ObservedChannels, []uint8{0}) {
 		t.Fatalf("capabilities = %+v, %v", capabilities.value, capabilities.err)
 	}
 	if cached, err := client.DeviceInfo(ctx); err != nil || cached != device.value {
 		t.Fatalf("cached device = %+v, %v", cached, err)
 	}
-	capabilities.value.ReadOnly[0] = "changed"
-	if cached, err := client.Capabilities(ctx, 0); err != nil || cached.Access("version") != CapabilityReadOnly {
+	capabilities.value.ObservedChannels[0] = 1
+	if cached, err := client.Capabilities(ctx, 0); err != nil ||
+		!slices.Equal(cached.ObservedChannels, []uint8{0}) {
 		t.Fatalf("cached capabilities = %+v, %v", cached, err)
 	}
 	if err = <-cameraErr; err != nil {

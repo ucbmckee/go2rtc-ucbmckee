@@ -3,6 +3,7 @@ package reolink
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -52,7 +53,7 @@ func TestBackchannelAddTrackReplacementAndIdleReopen(t *testing.T) {
 	format := baichuan.TalkFormat{SampleRate: 16000, SamplePrecision: 16, SamplesPerBlock: 4}
 	opened := make(chan fakeTalkPair, 2)
 	b := &backchannel{producer: p, format: format}
-	b.dial = func(context.Context, baichuan.Config, uint8) (talkSession, talkClient, error) {
+	b.dial = func(context.Context, baichuan.Config, uint8) (talkSession, io.Closer, error) {
 		talk := &fakeTalk{format: format, blocks: make(chan []byte, 1)}
 		client := &fakeTalkClient{}
 		opened <- fakeTalkPair{talk: talk, client: client}
@@ -110,7 +111,7 @@ func TestBackchannelWriteFailureCancelsProducer(t *testing.T) {
 	p := &Producer{ctx: ctx, cancel: cancel}
 	format := baichuan.TalkFormat{SampleRate: 16000, SamplePrecision: 16, SamplesPerBlock: 4}
 	b := &backchannel{producer: p, format: format}
-	b.dial = func(context.Context, baichuan.Config, uint8) (talkSession, talkClient, error) {
+	b.dial = func(context.Context, baichuan.Config, uint8) (talkSession, io.Closer, error) {
 		return &fakeTalk{
 			format: format, blocks: make(chan []byte, 1), writeErr: errors.New("sentinel write"),
 		}, &fakeTalkClient{}, nil
@@ -144,7 +145,7 @@ func TestBackchannelDialFailureClosesClient(t *testing.T) {
 	format := baichuan.TalkFormat{SampleRate: 16000, SamplePrecision: 16, SamplesPerBlock: 4}
 	client := &fakeTalkClient{}
 	b := &backchannel{producer: p, format: format}
-	b.dial = func(context.Context, baichuan.Config, uint8) (talkSession, talkClient, error) {
+	b.dial = func(context.Context, baichuan.Config, uint8) (talkSession, io.Closer, error) {
 		return nil, client, errors.New("sentinel dial")
 	}
 	if err := b.setCodec(&core.Codec{Name: core.CodecPCMA, ClockRate: 8000, Channels: 1}); err != nil {

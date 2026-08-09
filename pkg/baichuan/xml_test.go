@@ -26,7 +26,7 @@ func FuzzXMLParsers(f *testing.F) {
 		_, _ = parseNonce(body)
 		_, _ = parseExtension(body)
 		_, _ = decodeTalkAbility(body)
-		_, _ = parseCapabilities(body, 0)
+		_, _ = parseCapabilities(body)
 		_, _ = parseDeviceInfo(body)
 	})
 }

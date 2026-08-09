@@ -3,6 +3,7 @@ package baichuan
 import (
 	"bytes"
 	"encoding/xml"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +63,28 @@ func TestUIDConnSelectiveAcknowledgement(t *testing.T) {
 		defer conn.sendMu.Unlock()
 		return conn.sendCount == 0
 	})
+}
+
+func TestUIDConnSendWindowPreservesUnacknowledgedSlot(t *testing.T) {
+	conn := &uidConn{done: make(chan struct{}), sendWake: make(chan struct{}, 1)}
+	conn.writeDeadline.init()
+	conn.nextSend = uidSendWindow + 1
+	conn.sendCount = 1
+	conn.sendSlots[1] = uidSendSlot{packetID: 1, used: true}
+	conn.writeDeadline.set(time.Now().Add(-time.Second))
+	if packetID, err := conn.reserveSend(); err != os.ErrDeadlineExceeded {
+		t.Fatalf("reserved packet %d over unacknowledged slot: %v", packetID, err)
+	}
+	if conn.nextSend != uidSendWindow+1 || conn.sendCount != 1 {
+		t.Fatalf("send window changed: next=%d pending=%d", conn.nextSend, conn.sendCount)
+	}
+	conn.writeDeadline.set(time.Time{})
+	conn.releaseSend(1)
+	packetID, err := conn.reserveSend()
+	if err != nil || packetID != uidSendWindow+1 {
+		t.Fatalf("reservation after release = %d, %v", packetID, err)
+	}
+	conn.cancelSendReservation()
 }
 
 func TestUIDConnRejectsFutureAcknowledgement(t *testing.T) {

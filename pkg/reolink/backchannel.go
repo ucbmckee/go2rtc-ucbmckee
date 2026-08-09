@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -22,11 +23,7 @@ type talkSession interface {
 	Close(context.Context) error
 }
 
-type talkClient interface {
-	Close() error
-}
-
-type talkDialer func(context.Context, baichuan.Config, uint8) (talkSession, talkClient, error)
+type talkDialer func(context.Context, baichuan.Config, uint8) (talkSession, io.Closer, error)
 
 type backchannel struct {
 	producer *Producer
@@ -35,7 +32,7 @@ type backchannel struct {
 
 	mu        sync.Mutex
 	closed    bool
-	client    talkClient
+	client    io.Closer
 	talk      talkSession
 	encoder   baichuan.ADPCMEncoder
 	codec     core.Codec
@@ -207,7 +204,7 @@ func (b *backchannel) open() error {
 	return nil
 }
 
-func dialTalk(ctx context.Context, config baichuan.Config, channel uint8) (talkSession, talkClient, error) {
+func dialTalk(ctx context.Context, config baichuan.Config, channel uint8) (talkSession, io.Closer, error) {
 	client, err := baichuan.Dial(ctx, config)
 	if err != nil {
 		return nil, nil, err

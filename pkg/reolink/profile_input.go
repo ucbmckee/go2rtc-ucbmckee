@@ -29,30 +29,6 @@ type discoverySnapshot struct {
 	capabilityStatus string
 }
 
-type discoveryClient interface {
-	DeviceInfo(context.Context) (baichuan.DeviceInfo, error)
-	Capabilities(context.Context, uint8) (baichuan.Capabilities, error)
-}
-
-type deviceDiscovery struct {
-	done  chan struct{}
-	value baichuan.DeviceInfo
-	err   error
-}
-
-type capabilityDiscovery struct {
-	done  chan struct{}
-	value baichuan.Capabilities
-	err   error
-}
-
-// discoveryCache shares in-flight calls and retains only successful results.
-type discoveryCache struct {
-	mu           sync.Mutex
-	device       *deviceDiscovery
-	capabilities map[uint8]*capabilityDiscovery
-}
-
 func (p *Profile) probeTalk() (baichuan.TalkFormat, bool, error) {
 	p.talkMu.Lock()
 	defer p.talkMu.Unlock()
@@ -95,7 +71,7 @@ type baichuanInput struct {
 	err       error
 }
 
-func openBaichuan(ctx context.Context, camera *Camera, s source) (profileInput, error) {
+func openBaichuan(ctx context.Context, _ *Camera, s source) (profileInput, error) {
 	client, err := baichuan.Dial(ctx, s.config)
 	if err != nil {
 		return nil, err
@@ -103,7 +79,7 @@ func openBaichuan(ctx context.Context, camera *Camera, s source) (profileInput, 
 	if err = client.Login(ctx); err != nil {
 		return nil, errors.Join(err, client.Close())
 	}
-	discovery := camera.discover(ctx, client, s.channel)
+	discovery := discover(ctx, client, s.channel)
 	preview, err := client.StartPreview(ctx, s.channel, s.stream)
 	if err != nil {
 		return nil, errors.Join(err, client.Close())
@@ -111,7 +87,7 @@ func openBaichuan(ctx context.Context, camera *Camera, s source) (profileInput, 
 	return &baichuanInput{client: client, preview: preview, discovery: discovery}, nil
 }
 
-func (c *Camera) discover(ctx context.Context, client discoveryClient, channel uint8) discoverySnapshot {
+func discover(ctx context.Context, client *baichuan.Client, channel uint8) discoverySnapshot {
 	ctx, cancel := context.WithTimeout(ctx, capabilityProbeTimeout)
 	defer cancel()
 	var device baichuan.DeviceInfo
@@ -121,94 +97,17 @@ func (c *Camera) discover(ctx context.Context, client discoveryClient, channel u
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		device, deviceErr = c.discovery.deviceInfo(ctx, client)
+		device, deviceErr = client.DeviceInfo(ctx)
 	}()
 	go func() {
 		defer wg.Done()
-		capabilities, capabilityErr = c.discovery.channelCapabilities(ctx, client, channel)
+		capabilities, capabilityErr = client.Capabilities(ctx, channel)
 	}()
 	wg.Wait()
 	return discoverySnapshot{
 		device: device, capabilities: capabilities,
 		deviceStatus: discoveryStatus(deviceErr), capabilityStatus: discoveryStatus(capabilityErr),
 	}
-}
-
-func (c *discoveryCache) deviceInfo(
-	ctx context.Context, client discoveryClient,
-) (baichuan.DeviceInfo, error) {
-	for {
-		c.mu.Lock()
-		call := c.device
-		if call == nil {
-			call = &deviceDiscovery{done: make(chan struct{})}
-			c.device = call
-			c.mu.Unlock()
-
-			call.value, call.err = client.DeviceInfo(ctx)
-			c.mu.Lock()
-			if call.err != nil && c.device == call {
-				c.device = nil
-			}
-			close(call.done)
-			c.mu.Unlock()
-			return call.value, call.err
-		}
-		c.mu.Unlock()
-
-		select {
-		case <-call.done:
-			if call.err == nil {
-				return call.value, nil
-			}
-		case <-ctx.Done():
-			return baichuan.DeviceInfo{}, ctx.Err()
-		}
-	}
-}
-
-func (c *discoveryCache) channelCapabilities(
-	ctx context.Context, client discoveryClient, channel uint8,
-) (baichuan.Capabilities, error) {
-	for {
-		c.mu.Lock()
-		if c.capabilities == nil {
-			c.capabilities = make(map[uint8]*capabilityDiscovery)
-		}
-		call := c.capabilities[channel]
-		if call == nil {
-			call = &capabilityDiscovery{done: make(chan struct{})}
-			c.capabilities[channel] = call
-			c.mu.Unlock()
-
-			call.value, call.err = client.Capabilities(ctx, channel)
-			call.value = cloneCapabilities(call.value)
-			c.mu.Lock()
-			if call.err != nil && c.capabilities[channel] == call {
-				delete(c.capabilities, channel)
-			}
-			close(call.done)
-			c.mu.Unlock()
-			return cloneCapabilities(call.value), call.err
-		}
-		c.mu.Unlock()
-
-		select {
-		case <-call.done:
-			if call.err == nil {
-				return cloneCapabilities(call.value), nil
-			}
-		case <-ctx.Done():
-			return baichuan.Capabilities{}, ctx.Err()
-		}
-	}
-}
-
-func cloneCapabilities(value baichuan.Capabilities) baichuan.Capabilities {
-	value.ObservedChannels = append([]uint8(nil), value.ObservedChannels...)
-	value.ReadOnly = append([]string(nil), value.ReadOnly...)
-	value.ReadWrite = append([]string(nil), value.ReadWrite...)
-	return value
 }
 
 func discoveryStatus(err error) string {

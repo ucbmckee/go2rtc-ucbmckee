@@ -55,7 +55,7 @@ func (s *uidConn) reserveSend() (uint32, error) {
 		default:
 		}
 		s.sendMu.Lock()
-		if s.sendCount < uidSendWindow {
+		if s.sendCount < uidSendWindow && !s.sendSlots[s.nextSend%uidSendWindow].used {
 			packetID := s.nextSend
 			s.nextSend++
 			s.sendCount++

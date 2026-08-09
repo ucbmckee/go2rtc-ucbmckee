@@ -6,9 +6,12 @@ import (
 )
 
 const (
-	maxNonceBody = 4 << 10
-	maxNonceSize = 128
+	maxNonceBody       = 4 << 10
+	maxNonceSize       = 128
+	binaryExtensionXML = "<body><binaryData>1</binaryData></body>"
 )
+
+var binaryExtensionValue = 1
 
 type loginEnvelope struct {
 	XMLName xml.Name  `xml:"body"`
@@ -100,10 +103,13 @@ func parseNonce(body []byte) (string, error) {
 }
 
 func parseExtension(body []byte) (extension, error) {
-	var value extension
 	if len(body) == 0 {
-		return value, nil
+		return extension{}, nil
 	}
+	if string(body) == binaryExtensionXML {
+		return extension{BinaryData: &binaryExtensionValue}, nil
+	}
+	var value extension
 	if err := xml.Unmarshal(body, &value); err != nil {
 		return value, fmt.Errorf("decode extension XML: %w", err)
 	}

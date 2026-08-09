@@ -28,8 +28,7 @@ func TestProducerDiagnosticsAreRedacted(t *testing.T) {
 			Type: "E1 Zoom", Model: "E340", Hardware: "IPC_NT14", Firmware: "v3.2.0",
 		},
 		capabilities: baichuan.Capabilities{
-			Channel: 0, ObservedChannels: []uint8{0},
-			ReadOnly: []string{"version"}, ReadWrite: []string{"preview", "track"},
+			ObservedChannels: []uint8{0},
 		},
 		deviceStatus: "available", capabilityStatus: "available",
 	}}
@@ -339,7 +338,7 @@ func TestProducerFailureReleasesSessionBeforeReconnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	producer.talk.dial = func(context.Context, baichuan.Config, uint8) (talkSession, talkClient, error) {
+	producer.talk.dial = func(context.Context, baichuan.Config, uint8) (talkSession, io.Closer, error) {
 		return &fakeTalk{
 			format: format, blocks: make(chan []byte, 1), writeErr: errors.New("sentinel producer failure"),
 		}, &fakeTalkClient{}, nil

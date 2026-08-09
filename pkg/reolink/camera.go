@@ -12,13 +12,11 @@ type ProfileKey struct {
 }
 
 type Camera struct {
-	registry  *Registry
-	key       cameraKey
-	remote    string
-	profiles  map[*Profile]struct{}
-	epochs    map[ProfileKey]mediaEpoch
-	discovery discoveryCache
-
+	registry      *Registry
+	key           cameraKey
+	remote        string
+	profiles      map[*Profile]struct{}
+	epochs        map[ProfileKey]mediaEpoch
 	refs          int
 	generation    uint64
 	mainSessions  int
