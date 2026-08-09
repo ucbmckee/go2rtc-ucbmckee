@@ -21,6 +21,14 @@ type failingTransport struct {
 	once   sync.Once
 }
 
+type cancelTransport struct {
+	shortTransport
+	cancel                  context.CancelFunc
+	started, release, wrote chan struct{}
+	mu                      sync.Mutex
+	deadlines               int
+}
+
 func (t *failingTransport) Read([]byte) (int, error) {
 	<-t.closed
 	return 0, io.EOF
@@ -42,6 +50,28 @@ func (t *shortTransport) Write(b []byte) (int, error) {
 
 func (t *shortTransport) SetWriteDeadline(time.Time) error { return nil }
 func (t *shortTransport) Close() error                     { return nil }
+
+func (t *cancelTransport) Write(b []byte) (int, error) {
+	t.cancel()
+	<-t.started
+	close(t.wrote)
+	return len(b), nil
+}
+
+func (t *cancelTransport) SetWriteDeadline(deadline time.Time) error {
+	if deadline.IsZero() {
+		return nil
+	}
+	t.mu.Lock()
+	t.deadlines++
+	interrupt := t.deadlines == 2
+	t.mu.Unlock()
+	if interrupt {
+		close(t.started)
+		<-t.release
+	}
+	return nil
+}
 
 func TestWriteFullHandlesShortWrites(t *testing.T) {
 	conn := &shortTransport{step: 2}
@@ -78,6 +108,32 @@ func TestInterruptDeadlineWaitsForCallback(t *testing.T) {
 	}
 	close(release)
 	<-done
+}
+
+func TestWriteFullWaitsForCancellationCallback(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	conn := &cancelTransport{
+		cancel: cancel, started: make(chan struct{}), release: make(chan struct{}), wrote: make(chan struct{}),
+	}
+	released := false
+	defer func() {
+		if !released {
+			close(conn.release)
+		}
+	}()
+	done := make(chan error, 1)
+	go func() { done <- writeFull(ctx, conn, time.Second, []byte("payload")) }()
+	<-conn.wrote
+	select {
+	case err := <-done:
+		t.Fatalf("write returned while deadline callback was active: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(conn.release)
+	released = true
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func BenchmarkWriteFull(b *testing.B) {

@@ -10,6 +10,7 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/aac"
 	"github.com/AlexxIT/go2rtc/pkg/baichuan"
 	"github.com/AlexxIT/go2rtc/pkg/core"
+	"github.com/AlexxIT/go2rtc/pkg/creds"
 )
 
 func TestParseURL(t *testing.T) {
@@ -90,6 +91,17 @@ func TestParseURLErrorRedactsMalformedSource(t *testing.T) {
 	_, err := parseURL(source)
 	if err == nil || strings.Contains(err.Error(), "sentinel") {
 		t.Fatalf("unsafe parse error: %v", err)
+	}
+}
+
+func TestParseUIDErrorRegistersSecret(t *testing.T) {
+	const uid = "MalformedUID1234"
+	const source = "reolink://admin:pass@" + uid + "?transport=uid&unknown=1"
+	if _, err := parseURL(source); err == nil {
+		t.Fatal("accepted invalid UID source")
+	}
+	if redacted := creds.SecretString(source); strings.Contains(redacted, uid) {
+		t.Fatalf("UID source leaked: %s", redacted)
 	}
 }
 
@@ -207,6 +219,20 @@ func TestRetainProbePacketKeepsLatestGOP(t *testing.T) {
 	}
 	if len(probe.packets) != 1 || probe.bytes != 7 || probe.packets[0].Kind != baichuan.MediaVideoI {
 		t.Fatalf("unexpected retained probe: packets=%d bytes=%d", len(probe.packets), probe.bytes)
+	}
+}
+
+func TestRetainProbePacketOwnsPayload(t *testing.T) {
+	backing := make([]byte, 1024)
+	packet := baichuan.MediaPacket{Kind: baichuan.MediaVideoP, Data: backing[len(backing)-1:]}
+	packet.Data[0] = 1
+	probe := &mediaProbe{}
+	if err := probe.retain(packet); err != nil {
+		t.Fatal(err)
+	}
+	packet.Data[0] = 2
+	if probe.packets[0].Data[0] != 1 {
+		t.Fatal("probe retained the source payload allocation")
 	}
 }
 

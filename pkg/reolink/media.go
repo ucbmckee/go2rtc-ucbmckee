@@ -290,6 +290,7 @@ func (p *mediaProbe) retain(packet baichuan.MediaPacket) error {
 	if len(p.packets) >= maxProbePackets {
 		return mediaErrorf("reolink: codec probe exceeds %d packets", maxProbePackets)
 	}
+	packet.Data = append([]byte(nil), packet.Data...)
 	p.packets = append(p.packets, packet)
 	p.bytes += len(packet.Data)
 	return nil
