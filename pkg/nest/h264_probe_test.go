@@ -121,6 +121,51 @@ func TestWebRTCClientProbeTrackAndPLI(t *testing.T) {
 	close(client.done)
 }
 
+func TestWebRTCClientPreparesNegotiatedH264Profiles(t *testing.T) {
+	media := &core.Media{
+		Kind: core.KindVideo, Direction: core.DirectionRecvonly,
+		Codecs: []*core.Codec{
+			{Name: core.CodecH264, ClockRate: 90000, FmtpLine: "profile-level-id=42e01f", PayloadType: 96},
+			{Name: core.CodecH264, ClockRate: 90000, FmtpLine: "profile-level-id=64001f", PayloadType: 98},
+		},
+	}
+	conn := &go2rtcwebrtc.Conn{
+		Connection: core.Connection{Medias: []*core.Media{media}},
+		Mode:       core.ModeActiveProducer,
+	}
+	client := &WebRTCClient{conn: conn, done: make(chan struct{})}
+	if err := client.prepareH264Probe(); err != nil {
+		t.Fatal(err)
+	}
+	if len(conn.Receivers) != 2 || len(client.h264.Load().sources) != 2 {
+		t.Fatal("H264 profiles did not get independent source receivers")
+	}
+	selected, err := conn.GetTrack(media, &core.Codec{
+		Name: core.CodecH264, ClockRate: 90000, FmtpLine: "profile-level-id=64001f", PayloadType: 98,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != conn.Receivers[1] || len(conn.Receivers) != 2 {
+		t.Fatal("negotiated H264 profile did not reuse its source receiver")
+	}
+
+	var got *rtp.Packet
+	client.h264.Load().track.AppendChild(&core.Node{Input: func(packet *rtp.Packet) { got = packet }})
+	want := testRTP(1, 90, 0x65, 1)
+	selected.WriteRTP(want)
+	if got != want || client.h264.Load().packets.Load() != 1 {
+		t.Fatal("negotiated H264 profile did not feed the probe")
+	}
+	if err = conn.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	selected.WriteRTP(testRTP(2, 90, 0x65, 1))
+	if client.h264.Load().packets.Load() != 1 {
+		t.Fatal("closed H264 source still fed the probe")
+	}
+}
+
 func TestWebRTCClientMatchesWildcardProbe(t *testing.T) {
 	media := &core.Media{
 		Kind: core.KindVideo, Direction: core.DirectionRecvonly,

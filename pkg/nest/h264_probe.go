@@ -11,8 +11,9 @@ import (
 )
 
 type h264Probe struct {
-	media *core.Media
-	track *core.Receiver
+	media   *core.Media
+	track   *core.Receiver
+	sources []*core.Receiver
 
 	handoffOnce    sync.Once
 	handoffStarted atomic.Bool
@@ -41,7 +42,7 @@ type h264Probe struct {
 
 func newH264Probe(media *core.Media, codec *core.Codec, source *core.Receiver) *h264Probe {
 	track := core.NewReceiver(media, codec)
-	probe := &h264Probe{media: media, track: track}
+	probe := &h264Probe{media: media, track: track, sources: []*core.Receiver{source}}
 	forward := track.Input
 	track.Input = func(packet *rtp.Packet) {
 		probe.inspect(packet)
@@ -49,6 +50,16 @@ func newH264Probe(media *core.Media, codec *core.Codec, source *core.Receiver) *
 	}
 	track.WithParent(&source.Node)
 	return probe
+}
+
+func (p *h264Probe) addSource(source *core.Receiver) {
+	for _, current := range p.sources {
+		if current == source {
+			return
+		}
+	}
+	p.sources = append(p.sources, source)
+	source.AppendChild(&core.Node{Input: p.track.Input})
 }
 
 func (p *h264Probe) beginHandoff() {

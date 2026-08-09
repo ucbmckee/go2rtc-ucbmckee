@@ -265,6 +265,7 @@ func (c *WebRTCClient) prepareH264Probe() error {
 		if media.Kind != core.KindVideo || media.Direction != core.DirectionRecvonly {
 			continue
 		}
+		var probe *h264Probe
 		for _, codec := range media.Codecs {
 			if codec.Name != core.CodecH264 {
 				continue
@@ -273,7 +274,14 @@ func (c *WebRTCClient) prepareH264Probe() error {
 			if err != nil {
 				return err
 			}
-			c.h264.Store(newH264Probe(media, codec, source))
+			if probe == nil {
+				probe = newH264Probe(media, codec, source)
+			} else {
+				probe.addSource(source)
+			}
+		}
+		if probe != nil {
+			c.h264.Store(probe)
 			return nil
 		}
 	}
