@@ -3,7 +3,6 @@ package baichuan
 import (
 	"encoding/binary"
 	"fmt"
-	"sync/atomic"
 	"time"
 )
 
@@ -47,8 +46,6 @@ type MediaPacket struct {
 type MediaParser struct {
 	limits Limits
 	buf    []byte
-
-	adjustments atomic.Uint64
 }
 
 func NewMediaParser(limits Limits) (*MediaParser, error) {
@@ -57,10 +54,6 @@ func NewMediaParser(limits Limits) (*MediaParser, error) {
 		return nil, err
 	}
 	return &MediaParser{limits: limits}, nil
-}
-
-func (p *MediaParser) BoundaryAdjustments() uint64 {
-	return p.adjustments.Load()
 }
 
 func (p *MediaParser) Append(data []byte) ([]MediaPacket, error) {
@@ -194,9 +187,6 @@ func (p *MediaParser) parseIFrame(b []byte, codec string, payload, extra uint32)
 	}
 	if uint64(size) > uint64(p.limits.MaxMediaFrame) {
 		return MediaPacket{}, 0, false, fmt.Errorf("baichuan: video frame %d exceeds limit %d", size, p.limits.MaxMediaFrame)
-	}
-	if uint64(size) != declared {
-		p.adjustments.Add(1)
 	}
 	payloadEnd := size
 	if uint64(size) == declared {

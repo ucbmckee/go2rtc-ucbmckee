@@ -10,6 +10,12 @@ Experimental native Baichuan source for Reolink cameras on a trusted local netwo
 
 No FFmpeg, RTSP, or HTTP-FLV input bridge is required.
 
+## Compatibility
+
+The adapter discovers the selected profile's codecs from live media and probes talkback directly. Model identity and permission queries are diagnostic; they do not select a model-specific media path.
+
+Hardware testing covers E1 Zoom/E340 main/sub over TCP and dual-lens TrackFlex main/sub on both channels over TCP and UID, including H.264, H.265, AAC, and talkback. Current Reolink specifications show the same codec/profile/talk surface on [E1 Outdoor Pro](https://reolink.com/us/product/e1-outdoor-pro/), [Duo 3 PoE](https://support.reolink.com/c/duo-3-poe/), and [TrackMix PoE](https://reolink.com/us/product/reolink-trackmix-poe/); these are compatibility candidates, not hardware-validated support claims. The base [E1](https://reolink.com/product/e1/) publishes H.264 and a lower concurrent-stream limit.
+
 ## Configuration
 
 ```yaml
@@ -39,9 +45,9 @@ Set both `video=0` and `audio=0` for a backchannel-only source. The source still
 - One source serves all go2rtc consumers. Duplicate sources open separate camera sessions.
 - Multiple configured sources retain go2rtc's ordered codec matching. A later H.264 source can serve a consumer that does not negotiate HEVC; `video=0` prevents a source from satisfying video.
 - Connections are demand-driven. When the last consumer detaches, go2rtc stops the source and the adapter synchronously releases its preview, talk, transport, receivers, and session budget.
-- Current limits per camera endpoint and credential are two `main` sessions and ten `sub`/`extern` sessions. Excess sessions are rejected, not preempted. These limits remain experimental pending broader firmware testing.
+- The local guard permits two `main` and ten combined `sub`/`extern` sessions per endpoint and credential, matching the largest limits in the surveyed current specifications. A camera or a pool shared with other clients may reject earlier; camera errors remain authoritative.
 - Enabled audio must start within 10 seconds. A profile reconnects after 15 seconds without a valid audio frame. It also reconnects after a 60-second window below 75% of the advertised audio clock. Set `audio=0` if audio is disabled or unwanted.
-- Best-effort setup queries are shared per camera/channel and add model, firmware, channel, and permission diagnostics. Failed queries do not block streaming and remain retryable.
+- Best-effort setup queries are shared per camera/channel and add compact model, firmware, channel, and discovery status. Failed queries do not block streaming and remain retryable.
 - Repeated talkback negotiation, writes, and teardown are tested. Audible quality, echo, and client UI behavior remain experimental.
 
 ## Security and limits

@@ -31,10 +31,6 @@ func TestUIDConnRetransmitsUntilAcknowledged(t *testing.T) {
 		conn.sendMu.Unlock()
 		return count == 0
 	})
-	stats := conn.TransportStats()
-	if stats.SentPackets != 1 || stats.Retransmits == 0 || stats.ReceivedACKs == 0 {
-		t.Fatalf("unexpected send stats: %+v", stats)
-	}
 }
 
 func TestUIDConnSelectiveAcknowledgement(t *testing.T) {
@@ -78,15 +74,16 @@ func TestUIDConnRejectsFutureAcknowledgement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeUIDPacket(t, camera, conn, ack)
-	waitFor(t, time.Second, func() bool {
-		return conn.TransportStats().InvalidPackets == 1
-	})
+	parsed, err := parseUIDPacket(ack, uidSendWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.handleUIDAck(parsed)
 	conn.sendMu.Lock()
 	pending := conn.sendCount
 	conn.sendMu.Unlock()
-	if pending != 1 || conn.TransportStats().ReceivedACKs != 0 {
-		t.Fatalf("future ACK changed send window: pending=%d stats=%+v", pending, conn.TransportStats())
+	if pending != 1 {
+		t.Fatalf("future ACK changed send window: pending=%d", pending)
 	}
 	ack, err = marshalUIDAck(conn.clientID, 0, nil, uidSendWindow)
 	if err != nil {

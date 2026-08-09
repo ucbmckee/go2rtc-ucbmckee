@@ -80,34 +80,3 @@ func FuzzReadFrame(f *testing.F) {
 		_, _ = readFrame(bytes.NewReader(data), limits)
 	})
 }
-
-func BenchmarkEncodeRequest(b *testing.B) {
-	limits, err := (Limits{}).normalized()
-	if err != nil {
-		b.Fatal(err)
-	}
-	state := cipherState{mode: encryptionAES}
-	state.setAESKey(deriveAESKey("nonce", "password"))
-	for _, test := range []struct {
-		name   string
-		binary bool
-		size   int
-	}{
-		{name: "Encrypted32K", size: 32 << 10},
-		{name: "Binary1K", binary: true, size: 1 << 10},
-	} {
-		b.Run(test.name, func(b *testing.B) {
-			req := request{
-				command: commandTalkData, channel: 1, class: classOffset,
-				extension: make([]byte, 128), payload: make([]byte, test.size), binary: test.binary,
-			}
-			b.SetBytes(int64(len(req.extension) + len(req.payload)))
-			b.ReportAllocs()
-			for b.Loop() {
-				if _, err := encodeRequest(req, limits, state); err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
-	}
-}

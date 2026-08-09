@@ -11,7 +11,7 @@ func (p *Profile) watchTracks(ctx context.Context, cancel context.CancelFunc, st
 	}
 	ticker := time.NewTicker(p.trackCheckInterval)
 	defer ticker.Stop()
-	video, audio := p.videoFrames.Load(), p.audioFrames.Load()
+	video, audio := p.videoFrames.Load(), p.audioSamples.Load()
 	videoAt, audioAt := time.Now(), time.Now()
 	rateSamples, rateAt := p.audioSamples.Load(), time.Now()
 	for {
@@ -22,8 +22,8 @@ func (p *Profile) watchTracks(ctx context.Context, cancel context.CancelFunc, st
 			if frames := p.videoFrames.Load(); frames != video {
 				video, videoAt = frames, now
 			}
-			if frames := p.audioFrames.Load(); frames != audio {
-				audio, audioAt = frames, now
+			if samples := p.audioSamples.Load(); samples != audio {
+				audio, audioAt = samples, now
 			}
 			var err error
 			if p.video != nil && now.Sub(videoAt) >= p.trackStallTimeout {

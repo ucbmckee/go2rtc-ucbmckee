@@ -43,9 +43,6 @@ func TestMediaParserIFrameExtraHeader(t *testing.T) {
 			if err != nil || len(packets) != 2 {
 				t.Fatalf("unexpected result: packets=%d err=%v", len(packets), err)
 			}
-			if adjustments := p.BoundaryAdjustments(); adjustments != 0 {
-				t.Fatalf("unexpected boundary adjustments: %d", adjustments)
-			}
 			packet := packets[0]
 			if !bytes.Equal(packet.Data, []byte{1, 2, 3}) || packet.Timestamp != 123456 {
 				t.Fatalf("unexpected packet: %+v", packet)
@@ -104,24 +101,11 @@ func TestMediaParserAdjustsBrokenKeyframeLength(t *testing.T) {
 	video := videoFixture()[:35]
 	binary.LittleEndian.PutUint32(video[8:12], 100)
 	packets, err := p.Append(append(video, infoFixture()...))
-	if err != nil || len(packets) != 2 || p.BoundaryAdjustments() != 1 {
-		t.Fatalf("unexpected result: packets=%d adjustments=%d err=%v", len(packets), p.BoundaryAdjustments(), err)
+	if err != nil || len(packets) != 2 {
+		t.Fatalf("unexpected result: packets=%d err=%v", len(packets), err)
 	}
 	if !bytes.Equal(packets[0].Data, []byte{1, 2, 3}) {
 		t.Fatalf("unexpected keyframe data: %x", packets[0].Data)
-	}
-}
-
-func TestPreviewStatsExposeBoundaryAdjustments(t *testing.T) {
-	parser, _ := NewMediaParser(Limits{})
-	video := videoFixture()[:35]
-	binary.LittleEndian.PutUint32(video[8:12], 100)
-	if _, err := parser.Append(append(video, infoFixture()...)); err != nil {
-		t.Fatal(err)
-	}
-	preview := &Preview{parser: parser}
-	if adjustments := preview.Stats().BoundaryAdjustments; adjustments != 1 {
-		t.Fatalf("unexpected boundary adjustments: %d", adjustments)
 	}
 }
 
@@ -142,8 +126,8 @@ func TestPreviewBurstPreservesPacketBytes(t *testing.T) {
 		frame[24] = byte(i)
 		preview.deliver(message{payload: frame})
 	}
-	if stats := preview.Stats(); stats.QueueBytes == 0 || stats.QueueOverflows != 0 {
-		t.Fatalf("unexpected queued burst stats: %+v", stats)
+	if queued := preview.queueBytes.Load(); queued == 0 {
+		t.Fatal("preview burst was not queued")
 	}
 	for i := range count {
 		packet, err := preview.Read(context.Background())
@@ -154,8 +138,8 @@ func TestPreviewBurstPreservesPacketBytes(t *testing.T) {
 			t.Fatalf("packet %d corrupted: kind=%d size=%d first=%d", i, packet.Kind, len(packet.Data), packet.Data[0])
 		}
 	}
-	if stats := preview.Stats(); stats.QueueBytes != 0 || stats.QueueOverflows != 0 {
-		t.Fatalf("unexpected drained burst stats: %+v", stats)
+	if queued := preview.queueBytes.Load(); queued != 0 {
+		t.Fatalf("preview retained %d queued bytes", queued)
 	}
 }
 
@@ -167,10 +151,8 @@ func TestPreviewQueueByteBudget(t *testing.T) {
 	}
 	preview.deliver(message{payload: make([]byte, 20)})
 	preview.deliver(message{payload: make([]byte, 20)})
-	stats := preview.Stats()
-	if !errors.Is(preview.Err(), ErrPreviewOverflow) || stats.QueueBytes != 20 ||
-		stats.QueueHighWater != 20 || stats.QueueOverflows != 1 {
-		t.Fatalf("unexpected overflow state: err=%v stats=%+v", preview.Err(), stats)
+	if queued := preview.queueBytes.Load(); !errors.Is(preview.Err(), ErrPreviewOverflow) || queued != 20 {
+		t.Fatalf("unexpected overflow state: err=%v queued=%d", preview.Err(), queued)
 	}
 }
 
@@ -183,9 +165,8 @@ func TestPreviewQueueMessageBudget(t *testing.T) {
 	for range previewQueueMessages + 1 {
 		preview.deliver(message{})
 	}
-	stats := preview.Stats()
-	if !errors.Is(preview.Err(), ErrPreviewOverflow) || stats.QueueBytes != 0 || stats.QueueOverflows != 1 {
-		t.Fatalf("unexpected message overflow state: err=%v stats=%+v", preview.Err(), stats)
+	if queued := preview.queueBytes.Load(); !errors.Is(preview.Err(), ErrPreviewOverflow) || queued != 0 {
+		t.Fatalf("unexpected message overflow state: err=%v queued=%d", preview.Err(), queued)
 	}
 }
 
@@ -307,97 +288,4 @@ func FuzzMediaParser(f *testing.F) {
 		p, _ := NewMediaParser(Limits{MaxMediaFrame: 4096, MaxMediaBuffer: 8192, MaxResync: 1024})
 		_, _ = p.Append(data)
 	})
-}
-
-func BenchmarkMediaParserOwned(b *testing.B) {
-	fixture := append(videoFixture(), infoFixture()...)
-	p, err := NewMediaParser(Limits{})
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.ReportAllocs()
-	b.SetBytes(int64(len(fixture)))
-	for b.Loop() {
-		packets, err := p.appendOwned(fixture)
-		if err != nil || len(packets) != 2 {
-			b.Fatalf("unexpected result: packets=%d err=%v", len(packets), err)
-		}
-	}
-}
-
-func BenchmarkMediaParserReuse(b *testing.B) {
-	fixture := append(videoFixture(), infoFixture()...)
-	p, err := NewMediaParser(Limits{})
-	if err != nil {
-		b.Fatal(err)
-	}
-	var packets []MediaPacket
-	b.ReportAllocs()
-	b.SetBytes(int64(len(fixture)))
-	for b.Loop() {
-		packets, err = p.appendOwnedTo(fixture, packets)
-		if err != nil || len(packets) != 2 {
-			b.Fatalf("unexpected result: packets=%d err=%v", len(packets), err)
-		}
-	}
-}
-
-func BenchmarkMediaParserFrame(b *testing.B) {
-	const payloadSize = 1 << 20
-	fixture := make([]byte, 24+payloadSize)
-	binary.LittleEndian.PutUint32(fixture, mediaPFrameMin)
-	copy(fixture[4:8], "H265")
-	binary.LittleEndian.PutUint32(fixture[8:12], payloadSize)
-	fixture = append(fixture, infoFixture()...)
-
-	for _, benchmark := range []struct {
-		name   string
-		append func(*MediaParser, []byte) ([]MediaPacket, error)
-	}{
-		{name: "Copied", append: (*MediaParser).Append},
-		{name: "Owned", append: (*MediaParser).appendOwned},
-	} {
-		b.Run(benchmark.name, func(b *testing.B) {
-			p, err := NewMediaParser(Limits{})
-			if err != nil {
-				b.Fatal(err)
-			}
-			b.ReportAllocs()
-			b.SetBytes(int64(len(fixture)))
-			for b.Loop() {
-				packets, err := benchmark.append(p, fixture)
-				if err != nil || len(packets) != 2 {
-					b.Fatalf("unexpected result: packets=%d err=%v", len(packets), err)
-				}
-			}
-		})
-	}
-}
-
-func BenchmarkMediaParserIFrameBoundary(b *testing.B) {
-	const payloadSize = 1 << 20
-	const extra = 4
-	for _, adjustment := range []int{0, 4, 8} {
-		b.Run(fmt.Sprintf("Plus%d", adjustment), func(b *testing.B) {
-			fixture := make([]byte, 24+extra+payloadSize+adjustment)
-			binary.LittleEndian.PutUint32(fixture, mediaIFrameMin)
-			copy(fixture[4:8], "H265")
-			binary.LittleEndian.PutUint32(fixture[8:12], payloadSize)
-			binary.LittleEndian.PutUint32(fixture[12:16], extra)
-			fixture = append(fixture, infoFixture()...)
-			p, err := NewMediaParser(Limits{})
-			if err != nil {
-				b.Fatal(err)
-			}
-			b.ReportAllocs()
-			b.SetBytes(int64(len(fixture)))
-			b.ResetTimer()
-			for b.Loop() {
-				packets, err := p.appendOwned(fixture)
-				if err != nil || len(packets) != 2 {
-					b.Fatalf("unexpected result: packets=%d err=%v", len(packets), err)
-				}
-			}
-		})
-	}
 }

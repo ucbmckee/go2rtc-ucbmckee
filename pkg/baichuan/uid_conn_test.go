@@ -26,10 +26,6 @@ func TestUIDConnOrdersDataAndAcknowledges(t *testing.T) {
 		packet.packetID != 1 || len(packet.payload) != 0 {
 		t.Fatalf("unexpected ACK: %+v", packet)
 	}
-	stats := conn.TransportStats()
-	if stats.ReceivedPackets != 2 || stats.SentACKs == 0 || stats.ReceiveWindowHigh != 2 {
-		t.Fatalf("unexpected receive stats: %+v", stats)
-	}
 }
 
 func TestUIDConnDoesNotRedeliverDuplicateData(t *testing.T) {
@@ -45,10 +41,6 @@ func TestUIDConnDoesNotRedeliverDuplicateData(t *testing.T) {
 	}
 	if _, err := conn.Read(b); !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("duplicate reached reader: %v", err)
-	}
-	stats := conn.TransportStats()
-	if stats.ReceivedPackets != 1 || stats.DuplicatePackets != 1 {
-		t.Fatalf("unexpected duplicate stats: %+v", stats)
 	}
 }
 
@@ -97,10 +89,6 @@ func TestUIDConnIgnoresWrongEndpoint(t *testing.T) {
 	_ = conn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
 	if _, err = conn.Read(make([]byte, 1)); !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("spoofed packet reached reader: %v", err)
-	}
-	stats := conn.TransportStats()
-	if stats.ForeignPackets == 0 || stats.InvalidPackets == 0 {
-		t.Fatalf("unobserved discarded datagrams: %+v", stats)
 	}
 }
 
@@ -235,33 +223,5 @@ func waitFor(t *testing.T, timeout time.Duration, ready func() bool) {
 			t.Fatal("condition timed out")
 		}
 		time.Sleep(time.Millisecond)
-	}
-}
-
-func BenchmarkUIDReceive(b *testing.B) {
-	conn := &uidConn{clientID: 1001, done: make(chan struct{}), readQueue: make(chan uidChunk, 1)}
-	conn.readDeadline.init()
-	conn.pool.New = func() any { return new(uidBuffer) }
-	payload := make([]byte, 1200)
-	output := make([]byte, len(payload))
-	b.ReportAllocs()
-	b.SetBytes(int64(len(payload)))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		buffer := conn.getBuffer()
-		data, err := encodeUIDData(buffer[:], conn.clientID, uint32(i), payload, uidMTU-uidDataHeader)
-		if err != nil {
-			b.Fatal(err)
-		}
-		packet, err := parseUIDPacket(data, uidMTU-uidDataHeader)
-		if err != nil {
-			b.Fatal(err)
-		}
-		if !conn.handleUIDData(packet, buffer) {
-			b.Fatal("packet rejected")
-		}
-		if _, err = io.ReadFull(conn, output); err != nil {
-			b.Fatal(err)
-		}
 	}
 }

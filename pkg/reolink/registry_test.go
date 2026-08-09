@@ -30,7 +30,6 @@ type fakeProfileInput struct {
 	talkErr   error
 	talks     atomic.Uint32
 	closed    atomic.Bool
-	stats     baichuan.PreviewStats
 	closeErr  error
 	discovery discoverySnapshot
 }
@@ -59,10 +58,6 @@ func (i *fakeProfileInput) Read(ctx context.Context) (baichuan.MediaPacket, erro
 func (i *fakeProfileInput) ProbeTalk(context.Context, uint8) (baichuan.TalkFormat, error) {
 	i.talks.Add(1)
 	return i.talk, i.talkErr
-}
-
-func (i *fakeProfileInput) Stats() baichuan.PreviewStats {
-	return i.stats
 }
 
 func (i *fakeProfileInput) Discovery() discoverySnapshot {

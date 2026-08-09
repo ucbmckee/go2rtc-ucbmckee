@@ -77,8 +77,6 @@ type Preview struct {
 	messages   chan message
 	queueLimit int64
 	queueBytes atomic.Int64
-	queueHigh  atomic.Uint64
-	overflows  atomic.Uint64
 	done       chan struct{}
 	close      sync.Once
 	stop       sync.Once
@@ -90,14 +88,6 @@ type Preview struct {
 	parser  *MediaParser
 	packets []MediaPacket
 	next    int
-}
-
-type PreviewStats struct {
-	QueueBytes          uint64
-	QueueHighWater      uint64
-	QueueOverflows      uint64
-	BoundaryAdjustments uint64
-	Transport           TransportStats
 }
 
 func (p *Preview) Format(state fmt.State, _ rune) {
@@ -112,7 +102,6 @@ func (p *Preview) deliver(msg message) {
 	}
 	size := int64(len(msg.extension) + len(msg.payload))
 	if !p.reserveQueue(size) {
-		p.overflows.Add(1)
 		p.closeLocal(ErrPreviewOverflow)
 		return
 	}
@@ -122,7 +111,6 @@ func (p *Preview) deliver(msg message) {
 		p.queueBytes.Add(-size)
 	default:
 		p.queueBytes.Add(-size)
-		p.overflows.Add(1)
 		p.closeLocal(ErrPreviewOverflow)
 	}
 }
@@ -136,26 +124,8 @@ func (p *Preview) reserveQueue(size int64) bool {
 		if !p.queueBytes.CompareAndSwap(queued, queued+size) {
 			continue
 		}
-		high := uint64(queued + size)
-		for current := p.queueHigh.Load(); high > current && !p.queueHigh.CompareAndSwap(current, high); {
-			current = p.queueHigh.Load()
-		}
 		return true
 	}
-}
-
-func (p *Preview) Stats() PreviewStats {
-	stats := PreviewStats{
-		QueueBytes: uint64(p.queueBytes.Load()), QueueHighWater: p.queueHigh.Load(),
-		QueueOverflows: p.overflows.Load(),
-	}
-	if p.client != nil {
-		stats.Transport = p.client.TransportStats()
-	}
-	if p.parser != nil {
-		stats.BoundaryAdjustments = p.parser.BoundaryAdjustments()
-	}
-	return stats
 }
 
 func (p *Preview) Read(ctx context.Context) (MediaPacket, error) {

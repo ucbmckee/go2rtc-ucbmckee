@@ -47,17 +47,17 @@ func TestWritePacketAcceptsDuplicateH264ParameterSets(t *testing.T) {
 	changed := h264Keyframe(t, "Z2QAFqwa0BQF/yzcBAQFAAADAAEAAAMAHo8UIqA=", 0x80, 2)
 	if frame, err := pipeline.frame(baichuan.MediaPacket{
 		Kind: baichuan.MediaVideoI, Codec: "H264", Data: changed,
-	}); err != nil || frame == nil {
+	}); err != nil || !frame.valid() {
 		t.Fatalf("duplicate parameter sets failed: frame=%v err=%v", frame, err)
 	}
-	if pipeline.videoConfig != config || pipeline.paramVariants.Load() != 1 {
-		t.Fatalf("parameter variant not normalized: config=%q variants=%d", pipeline.videoConfig, pipeline.paramVariants.Load())
+	if pipeline.videoConfig != config {
+		t.Fatalf("parameter variant changed configuration: %q", pipeline.videoConfig)
 	}
 	if _, err := pipeline.frame(baichuan.MediaPacket{
 		Kind: baichuan.MediaVideoI, Codec: "H264",
 		Data: h264Keyframe(t, "Z2QAFqwa0BQF/yzcBAQFAAADAAEAAAMAHo8UIqA=", 0x80, 2),
-	}); err != nil || pipeline.paramVariants.Load() != 2 {
-		t.Fatalf("parameter variant not counted: variants=%d err=%v", pipeline.paramVariants.Load(), err)
+	}); err != nil {
+		t.Fatalf("repeated parameter variant failed: %v", err)
 	}
 }
 
@@ -77,7 +77,7 @@ func TestWritePacketAcceptsReorderedH264ParameterSets(t *testing.T) {
 	frame, err := pipeline.frame(baichuan.MediaPacket{
 		Kind: baichuan.MediaVideoI, Codec: "H264", Data: h264AccessUnit(pps, sps, idr),
 	})
-	if err != nil || frame == nil {
+	if err != nil || !frame.valid() {
 		t.Fatalf("reordered parameter sets failed: frame=%v err=%v", frame, err)
 	}
 }
@@ -99,7 +99,7 @@ func TestWritePacketRejectsH264ParameterSetChange(t *testing.T) {
 			packet := baichuan.MediaPacket{
 				Kind: baichuan.MediaVideoI, Codec: "H264", Data: changed,
 			}
-			if frame, err := pipeline.frame(packet); err != nil || frame != nil {
+			if frame, err := pipeline.frame(packet); err != nil || frame.valid() {
 				t.Fatalf("first parameter-set candidate was not suppressed: frame=%v err=%v", frame, err)
 			}
 			packet.Data = h264Keyframe(t, "Z2QAFqwa0BQF/yzcBAQFAAADAAEAAAMAHo8UIqA=", 0x80, 1)
@@ -122,7 +122,7 @@ func TestWritePacketRejectsH265ParameterSetChange(t *testing.T) {
 	}
 	changed := testVideoKeyframe("H265", 1_000_000)
 	changed.Data[5] ^= 8 // change nuh_layer_id without invalidating the NAL header
-	if frame, err := pipeline.videoFrame(changed); err != nil || frame != nil {
+	if frame, err := pipeline.videoFrame(changed); err != nil || frame.valid() {
 		t.Fatalf("first parameter-set candidate was not suppressed: frame=%v err=%v", frame, err)
 	}
 	changed = testVideoKeyframe("H265", 1_050_000)
@@ -142,19 +142,14 @@ func TestWritePacketRecoversFromSingleH264ParameterCandidate(t *testing.T) {
 	changed[10] ^= 1
 	if frame, err := pipeline.frame(baichuan.MediaPacket{
 		Kind: baichuan.MediaVideoI, Codec: "H264", Timestamp: 1_000_000, Data: changed,
-	}); err != nil || frame != nil {
+	}); err != nil || frame.valid() {
 		t.Fatalf("parameter candidate was not suppressed: frame=%v err=%v", frame, err)
 	}
 	if frame, err := pipeline.frame(baichuan.MediaPacket{
 		Kind: baichuan.MediaVideoI, Codec: "H264", Timestamp: 1_050_000,
 		Data: h264Keyframe(t, "Z2QAFqwa0BQF/yzcBAQFAAADAAEAAAMAHo8UIqA=", 0x80, 1),
-	}); err != nil || frame == nil {
+	}); err != nil || !frame.valid() {
 		t.Fatalf("original parameters did not recover: frame=%v err=%v", frame, err)
-	}
-	if pipeline.paramCandidates.Load() != 1 || pipeline.videoDrops.Load() != 1 ||
-		pipeline.videoRecoveries.Load() != 1 {
-		t.Fatalf("unexpected recovery counters: candidates=%d drops=%d recoveries=%d",
-			pipeline.paramCandidates.Load(), pipeline.videoDrops.Load(), pipeline.videoRecoveries.Load())
 	}
 }
 
@@ -167,18 +162,13 @@ func TestWritePacketResyncsAfterExcessH264ParameterSets(t *testing.T) {
 	if frame, err := pipeline.videoFrame(baichuan.MediaPacket{
 		Kind: baichuan.MediaVideoI, Codec: "H264", Timestamp: 1_000_000,
 		Data: h264Keyframe(t, "Z2QAFqwa0BQF/yzcBAQFAAADAAEAAAMAHo8UIqA=", 0x80, 64),
-	}); err != nil || frame != nil {
+	}); err != nil || frame.valid() {
 		t.Fatalf("excess parameter sets were not suppressed: frame=%v err=%v", frame, err)
 	}
 	if frame, err := pipeline.videoFrame(baichuan.MediaPacket{
 		Kind: baichuan.MediaVideoI, Codec: "H264", Timestamp: 1_050_000, Data: base,
-	}); err != nil || frame == nil {
+	}); err != nil || !frame.valid() {
 		t.Fatalf("valid keyframe did not resync: frame=%v err=%v", frame, err)
-	}
-	if pipeline.videoInvalid.Load() != 1 || pipeline.videoDrops.Load() != 1 ||
-		pipeline.videoRecoveries.Load() != 1 {
-		t.Fatalf("unexpected repair counters: invalid=%d drops=%d recoveries=%d",
-			pipeline.videoInvalid.Load(), pipeline.videoDrops.Load(), pipeline.videoRecoveries.Load())
 	}
 }
 
@@ -188,18 +178,18 @@ func TestWritePacketInvalidVideoDoesNotPoisonClock(t *testing.T) {
 	if err := pipeline.configureVideo(base); err != nil {
 		t.Fatal(err)
 	}
-	if frame, err := pipeline.videoFrame(base); err != nil || frame == nil || frame.packet.Timestamp != 0 {
+	if frame, err := pipeline.videoFrame(base); err != nil || !frame.valid() || frame.packet.Timestamp != 0 {
 		t.Fatalf("unexpected initial frame: frame=%v err=%v", frame, err)
 	}
 	if frame, err := pipeline.videoFrame(baichuan.MediaPacket{
 		Kind: baichuan.MediaVideoP, Codec: "H264", Timestamp: 21_000_000,
 		Data: []byte{0, 0, 0, 1, 0xc1, 1},
-	}); err != nil || frame != nil {
+	}); err != nil || frame.valid() {
 		t.Fatalf("invalid frame was not suppressed: frame=%v err=%v", frame, err)
 	}
 	recovery := testH264Keyframe(1_100_000)
 	frame, err := pipeline.videoFrame(recovery)
-	if err != nil || frame == nil {
+	if err != nil || !frame.valid() {
 		t.Fatalf("invalid timestamp poisoned recovery: frame=%v err=%v", frame, err)
 	}
 	if frame.packet.Timestamp != 9000 {
@@ -255,27 +245,6 @@ func FuzzH264ParameterSignature(f *testing.F) {
 		avcc = append(avcc, 0x68, 0)
 		_, _ = h264ParameterSignature(avcc)
 	})
-}
-
-func BenchmarkMediaPipelineVideoFrame(b *testing.B) {
-	for _, size := range []int{32 << 10, 1 << 20} {
-		b.Run(fmt.Sprintf("%dK", size>>10), func(b *testing.B) {
-			data := make([]byte, size)
-			copy(data, []byte{0, 0, 0, 1, 0x02, 0x01})
-			pipeline := mediaPipeline{videoCodec: "H265"}
-			packet := baichuan.MediaPacket{Kind: baichuan.MediaVideoP, Codec: "H265", Data: data}
-			b.SetBytes(int64(size))
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				binary.BigEndian.PutUint32(data, 1)
-				packet.Timestamp = uint32(i * 50_000)
-				if _, err := pipeline.videoFrame(packet); err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
-	}
 }
 
 func TestEncodeOwnedToAVCC(t *testing.T) {
@@ -363,19 +332,14 @@ func TestWritePacketResyncsAfterInvalidNALHeaders(t *testing.T) {
 			data := append([]byte{0, 0, 0, 1}, test.nalu...)
 			if frame, err := pipeline.videoFrame(baichuan.MediaPacket{
 				Kind: baichuan.MediaVideoP, Codec: test.codec, Timestamp: 1_050_000, Data: data,
-			}); err != nil || frame != nil {
+			}); err != nil || frame.valid() {
 				t.Fatalf("invalid NAL was not suppressed: frame=%v err=%v", frame, err)
 			}
-			if frame, err := pipeline.videoFrame(testVideoPFrame(test.codec, 1_100_000)); err != nil || frame != nil {
+			if frame, err := pipeline.videoFrame(testVideoPFrame(test.codec, 1_100_000)); err != nil || frame.valid() {
 				t.Fatalf("intervening frame was not suppressed: frame=%v err=%v", frame, err)
 			}
-			if frame, err := pipeline.videoFrame(testVideoKeyframe(test.codec, 1_150_000)); err != nil || frame == nil {
+			if frame, err := pipeline.videoFrame(testVideoKeyframe(test.codec, 1_150_000)); err != nil || !frame.valid() {
 				t.Fatalf("valid keyframe did not resync: frame=%v err=%v", frame, err)
-			}
-			if pipeline.videoInvalid.Load() != 1 || pipeline.videoDrops.Load() != 2 ||
-				pipeline.videoRecoveries.Load() != 1 {
-				t.Fatalf("unexpected repair counters: invalid=%d drops=%d recoveries=%d",
-					pipeline.videoInvalid.Load(), pipeline.videoDrops.Load(), pipeline.videoRecoveries.Load())
 			}
 		})
 	}

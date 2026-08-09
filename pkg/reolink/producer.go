@@ -137,41 +137,23 @@ type producerDiagnostics struct {
 }
 
 type profileDiagnostics struct {
-	Endpoint        string                  `json:"endpoint"`
-	Channel         uint8                   `json:"channel"`
-	Profile         string                  `json:"profile"`
-	State           string                  `json:"state"`
-	Generation      uint64                  `json:"generation"`
-	Profiles        int                     `json:"profiles"`
-	MainSessions    int                     `json:"main_sessions"`
-	OtherSessions   int                     `json:"other_sessions"`
-	VideoCodec      string                  `json:"video_codec,omitempty"`
-	AudioCodec      string                  `json:"audio_codec,omitempty"`
-	CameraType      string                  `json:"camera_type,omitempty"`
-	CameraModel     string                  `json:"camera_model,omitempty"`
-	HardwareVersion string                  `json:"hardware_version,omitempty"`
-	FirmwareVersion string                  `json:"firmware_version,omitempty"`
-	DeviceInfo      string                  `json:"device_info_status,omitempty"`
-	CapabilityInfo  string                  `json:"capability_status,omitempty"`
-	Channels        []uint16                `json:"observed_channels,omitempty"`
-	ReadOnly        []string                `json:"read_only_capabilities,omitempty"`
-	ReadWrite       []string                `json:"read_write_capabilities,omitempty"`
-	ReceivedBytes   uint64                  `json:"received_bytes"`
-	ReceivedPacket  uint64                  `json:"received_packets"`
-	Frames          uint64                  `json:"frames"`
-	VideoFrames     uint64                  `json:"video_frames"`
-	AudioFrames     uint64                  `json:"audio_frames,omitempty"`
-	AudioSamples    uint64                  `json:"audio_samples,omitempty"`
-	QueueHighWater  uint64                  `json:"preview_queue_high_water_bytes,omitempty"`
-	QueueOverflows  uint64                  `json:"preview_queue_overflows,omitempty"`
-	BoundaryAdjust  uint64                  `json:"boundary_adjustments,omitempty"`
-	ParamVariants   uint64                  `json:"parameter_set_variants,omitempty"`
-	ParamCandidates uint64                  `json:"parameter_set_candidates,omitempty"`
-	VideoInvalid    uint64                  `json:"invalid_video_units,omitempty"`
-	VideoDrops      uint64                  `json:"video_resync_drops,omitempty"`
-	VideoRecoveries uint64                  `json:"video_resyncs,omitempty"`
-	Transport       baichuan.TransportStats `json:"transport"`
-	LastError       string                  `json:"last_error_class,omitempty"`
+	Channel         uint8    `json:"channel"`
+	Profile         string   `json:"profile"`
+	State           string   `json:"state"`
+	Generation      uint64   `json:"generation"`
+	Profiles        int      `json:"profiles"`
+	MainSessions    int      `json:"main_sessions"`
+	OtherSessions   int      `json:"other_sessions"`
+	VideoCodec      string   `json:"video_codec,omitempty"`
+	AudioCodec      string   `json:"audio_codec,omitempty"`
+	CameraType      string   `json:"camera_type,omitempty"`
+	CameraModel     string   `json:"camera_model,omitempty"`
+	HardwareVersion string   `json:"hardware_version,omitempty"`
+	FirmwareVersion string   `json:"firmware_version,omitempty"`
+	DeviceInfo      string   `json:"device_info_status,omitempty"`
+	CapabilityInfo  string   `json:"capability_status,omitempty"`
+	Channels        []uint16 `json:"observed_channels,omitempty"`
+	LastError       string   `json:"last_error_class,omitempty"`
 }
 
 func (p *Producer) diagnostics() profileDiagnostics {
@@ -182,37 +164,20 @@ func (p *Producer) diagnostics() profileDiagnostics {
 	p.failureMu.Unlock()
 	registry.mu.Lock()
 	profile.mu.Lock()
-	var stats baichuan.PreviewStats
-	if profile.input != nil {
-		stats = profile.input.Stats()
-	}
-	videoFrames, audioFrames := profile.videoFrames.Load(), profile.audioFrames.Load()
 	channels := make([]uint16, len(profile.discovery.capabilities.ObservedChannels))
 	for i, channel := range profile.discovery.capabilities.ObservedChannels {
 		channels[i] = uint16(channel)
 	}
 	d := profileDiagnostics{
-		Endpoint: profile.camera.remote, Channel: profile.key.Channel, Profile: string(profile.key.Stream),
+		Channel: profile.key.Channel, Profile: string(profile.key.Stream),
 		State: profile.state.String(), Generation: profile.generation, Profiles: len(profile.camera.profiles),
 		MainSessions: profile.camera.mainSessions, OtherSessions: profile.camera.otherSessions,
-		VideoCodec: profile.pipeline.videoCodec, ReceivedBytes: profile.recvBytes.Load(),
+		VideoCodec: profile.pipeline.videoCodec,
 		CameraType: profile.discovery.device.Type, CameraModel: profile.discovery.device.Model,
 		HardwareVersion: profile.discovery.device.Hardware, FirmwareVersion: profile.discovery.device.Firmware,
 		DeviceInfo: profile.discovery.deviceStatus, CapabilityInfo: profile.discovery.capabilityStatus,
-		Channels:       channels,
-		ReadOnly:       append([]string(nil), profile.discovery.capabilities.ReadOnly...),
-		ReadWrite:      append([]string(nil), profile.discovery.capabilities.ReadWrite...),
-		ReceivedPacket: profile.recvPackets.Load(), Frames: videoFrames + audioFrames,
-		VideoFrames: videoFrames, AudioFrames: audioFrames, AudioSamples: profile.audioSamples.Load(),
-		QueueHighWater: stats.QueueHighWater, QueueOverflows: stats.QueueOverflows,
-		BoundaryAdjust:  stats.BoundaryAdjustments,
-		ParamVariants:   profile.pipeline.paramVariants.Load(),
-		ParamCandidates: profile.pipeline.paramCandidates.Load(),
-		VideoInvalid:    profile.pipeline.videoInvalid.Load(),
-		VideoDrops:      profile.pipeline.videoDrops.Load(),
-		VideoRecoveries: profile.pipeline.videoRecoveries.Load(),
-		Transport:       stats.Transport,
-		LastError:       profile.errClass,
+		Channels:  channels,
+		LastError: profile.errClass,
 	}
 	if profile.pipeline.audioMedia != nil {
 		d.AudioCodec = profile.pipeline.audioMedia.Codecs[0].Name

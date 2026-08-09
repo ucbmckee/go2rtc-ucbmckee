@@ -73,7 +73,6 @@ type uidConn struct {
 	sendCount int
 	nextSend  uint32
 	sendWake  chan struct{}
-	sendStats uidSendStats
 
 	receiveMu    sync.Mutex
 	receiveSlots [uidReceiveWindow]uidReceiveSlot
@@ -81,7 +80,6 @@ type uidConn struct {
 	received     bool
 	ackDirty     bool
 	receiveCount int
-	receiveStats uidReceiveStats
 
 	pool sync.Pool
 }

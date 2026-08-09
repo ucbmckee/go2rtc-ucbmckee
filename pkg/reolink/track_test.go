@@ -93,13 +93,16 @@ func TestAudioOnlyProfileRetainsLatestStartupPacket(t *testing.T) {
 		t.Fatal(err)
 	}
 	input := opener.input(0)
+	bytes := producer.profile.recvBytes.Load()
 	const packets = maxProbePackets + 16
 	for i := range packets {
 		packet := testAAC(uint32(i) * 64_000)
 		packet.Data[len(packet.Data)-1] = byte(i)
 		input.results <- inputResult{packet: packet}
 	}
-	waitFor(t, func() bool { return producer.profile.recvPackets.Load() == packets+2 })
+	waitFor(t, func() bool {
+		return producer.profile.recvBytes.Load() == bytes+packets*uint64(len(testAAC(0).Data))
+	})
 	select {
 	case <-producer.profile.done:
 		t.Fatal("audio-only profile failed before start")
@@ -172,8 +175,8 @@ func TestProfileDeliversOnlyEnabledTracks(t *testing.T) {
 			t.Fatal("video packet not delivered")
 		}
 	}
-	if video, audio := producer.profile.videoFrames.Load(), producer.profile.audioFrames.Load(); video != 11 || audio != 0 {
-		t.Fatalf("unexpected frame counts: video=%d audio=%d", video, audio)
+	if video, audio := producer.profile.videoFrames.Load(), producer.profile.audioSamples.Load(); video != 11 || audio != 0 {
+		t.Fatalf("unexpected liveness state: video=%d audio_samples=%d", video, audio)
 	}
 	input.results <- inputResult{err: io.ErrUnexpectedEOF}
 	if err = <-done; !errors.Is(err, io.ErrUnexpectedEOF) {

@@ -136,18 +136,6 @@ func TestWriteFullWaitsForCancellationCallback(t *testing.T) {
 	}
 }
 
-func BenchmarkWriteFull(b *testing.B) {
-	conn := &shortTransport{step: 1024}
-	payload := make([]byte, 1024)
-	b.ReportAllocs()
-	for b.Loop() {
-		conn.Reset()
-		if err := writeFull(context.Background(), conn, time.Second, payload); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 func TestClientCloseInterruptsFrameRead(t *testing.T) {
 	conn, peer := net.Pipe()
 	defer peer.Close()

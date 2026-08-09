@@ -102,13 +102,6 @@ func (c *Client) Err() error {
 	return c.err
 }
 
-func (c *Client) TransportStats() TransportStats {
-	if stats, ok := c.conn.(interface{ TransportStats() TransportStats }); ok {
-		return stats.TransportStats()
-	}
-	return TransportStats{Mode: "tcp"}
-}
-
 func (c *Client) Close() error {
 	c.shutdown(context.Canceled)
 	// Login may add keepalive work; wait for it before waiting on the group.

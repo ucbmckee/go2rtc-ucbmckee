@@ -13,7 +13,6 @@ import (
 type profileInput interface {
 	Read(context.Context) (baichuan.MediaPacket, error)
 	ProbeTalk(context.Context, uint8) (baichuan.TalkFormat, error)
-	Stats() baichuan.PreviewStats
 	Close() error
 }
 
@@ -231,10 +230,6 @@ func (i *baichuanInput) Read(ctx context.Context) (baichuan.MediaPacket, error) 
 
 func (i *baichuanInput) ProbeTalk(ctx context.Context, channel uint8) (baichuan.TalkFormat, error) {
 	return i.client.ProbeTalk(ctx, channel)
-}
-
-func (i *baichuanInput) Stats() baichuan.PreviewStats {
-	return i.preview.Stats()
 }
 
 func (i *baichuanInput) Close() error {

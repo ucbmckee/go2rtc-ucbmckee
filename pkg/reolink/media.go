@@ -2,7 +2,6 @@ package reolink
 
 import (
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/aac"
@@ -51,22 +50,21 @@ type mediaFrame struct {
 	samples  uint32
 }
 
+func (f mediaFrame) valid() bool {
+	return f.packet.Payload != nil
+}
+
 type mediaPipeline struct {
 	medias []*core.Media
 	epoch  mediaEpoch
 
-	videoCodec      string
-	videoConfig     string
-	videoParams     string
-	videoCandidate  string
-	videoResync     bool
-	videoMedia      *core.Media
-	videoTS         mediaClock
-	paramVariants   atomic.Uint64
-	paramCandidates atomic.Uint64
-	videoInvalid    atomic.Uint64
-	videoDrops      atomic.Uint64
-	videoRecoveries atomic.Uint64
+	videoCodec     string
+	videoConfig    string
+	videoParams    string
+	videoCandidate string
+	videoResync    bool
+	videoMedia     *core.Media
+	videoTS        mediaClock
 
 	audioKind   baichuan.MediaKind
 	audioConfig uint16
@@ -89,7 +87,6 @@ func (m *mediaPipeline) probeVideo(packet baichuan.MediaPacket) error {
 		return mediaErrorf("reolink: unsupported video codec %q", packet.Codec)
 	}
 	if !validVideoConfig(packet.Codec, payload) {
-		m.videoInvalid.Add(1)
 		return nil
 	}
 	return m.configureVideoPayload(packet.Codec, payload)
@@ -160,113 +157,103 @@ func (m *mediaPipeline) configureAudio(packet baichuan.MediaPacket) error {
 	return nil
 }
 
-func (m *mediaPipeline) frame(packet baichuan.MediaPacket) (*mediaFrame, error) {
+func (m *mediaPipeline) frame(packet baichuan.MediaPacket) (mediaFrame, error) {
 	switch packet.Kind {
 	case baichuan.MediaVideoI, baichuan.MediaVideoP:
 		return m.videoFrame(packet)
 	case baichuan.MediaAAC, baichuan.MediaADPCM:
 		return m.audioFrame(packet)
 	default:
-		return nil, nil
+		return mediaFrame{}, nil
 	}
 }
 
-func (m *mediaPipeline) videoFrame(packet baichuan.MediaPacket) (*mediaFrame, error) {
+func (m *mediaPipeline) videoFrame(packet baichuan.MediaPacket) (mediaFrame, error) {
 	if packet.Codec != m.videoCodec {
-		return nil, mediaErrorf("reolink: video codec changed from %s to %s", m.videoCodec, packet.Codec)
+		return mediaFrame{}, mediaErrorf("reolink: video codec changed from %s to %s", m.videoCodec, packet.Codec)
 	}
 	payload := encodeOwnedToAVCC(packet.Data)
 	if validateVideoPayload(packet.Codec, payload) != nil {
 		m.suppressInvalidVideo()
-		return nil, nil
+		return mediaFrame{}, nil
 	}
 	if packet.Kind == baichuan.MediaVideoI {
 		if !validVideoConfig(packet.Codec, payload) {
 			m.suppressInvalidVideo()
-			return nil, nil
+			return mediaFrame{}, nil
 		}
-		same, variant, candidate, err := m.videoParameters(packet.Codec, payload)
+		same, candidate, err := m.videoParameters(packet.Codec, payload)
 		if err != nil {
 			m.suppressInvalidVideo()
-			return nil, nil
+			return mediaFrame{}, nil
 		}
 		if !same {
 			if candidate == m.videoCandidate {
-				return nil, mediaErrorf("reolink: %s parameter sets changed", packet.Codec)
+				return mediaFrame{}, mediaErrorf("reolink: %s parameter sets changed", packet.Codec)
 			}
 			m.videoCandidate = candidate
-			m.paramCandidates.Add(1)
 			m.videoResync = true
-			m.videoDrops.Add(1)
-			return nil, nil
+			return mediaFrame{}, nil
 		}
 		m.videoCandidate = ""
-		if variant {
-			m.paramVariants.Add(1)
-		}
 		if m.videoResync {
 			m.videoResync = false
-			m.videoRecoveries.Add(1)
 		}
 	}
 	if m.videoResync {
-		m.videoDrops.Add(1)
-		return nil, nil
+		return mediaFrame{}, nil
 	}
 	timestamp, err := m.videoTS.next(packet.Timestamp, 90000)
 	if err != nil {
-		return nil, mediaErrorf("reolink: video timestamp: %w", err)
+		return mediaFrame{}, mediaErrorf("reolink: video timestamp: %w", err)
 	}
-	return &mediaFrame{
+	return mediaFrame{
 		track: trackVideo, keyframe: packet.Kind == baichuan.MediaVideoI,
 		packet: rtp.Packet{Header: rtp.Header{Timestamp: timestamp}, Payload: payload},
 	}, nil
 }
 
 func (m *mediaPipeline) suppressInvalidVideo() {
-	m.videoInvalid.Add(1)
 	m.videoCandidate = ""
 	m.videoResync = true
-	m.videoDrops.Add(1)
 }
 
-func (m *mediaPipeline) videoParameters(codec string, payload []byte) (same, variant bool, candidate string, err error) {
+func (m *mediaPipeline) videoParameters(codec string, payload []byte) (same bool, candidate string, err error) {
 	if codec == "H264" {
 		params, sigErr := h264ParameterSignature(payload)
 		if sigErr != nil {
-			return false, false, "", sigErr
+			return false, "", sigErr
 		}
-		return params == m.videoParams, params == m.videoParams && h264.GetFmtpLine(payload) != m.videoConfig,
-			params, nil
+		return params == m.videoParams, params, nil
 	}
 	parsed := h265.AVCCToCodec(payload)
 	if parsed == nil {
-		return false, false, "", mediaErrorf("reolink: invalid H265 keyframe")
+		return false, "", mediaErrorf("reolink: invalid H265 keyframe")
 	}
-	return parsed.FmtpLine == m.videoConfig, false, parsed.FmtpLine, nil
+	return parsed.FmtpLine == m.videoConfig, parsed.FmtpLine, nil
 }
 
-func (m *mediaPipeline) audioFrame(packet baichuan.MediaPacket) (*mediaFrame, error) {
+func (m *mediaPipeline) audioFrame(packet baichuan.MediaPacket) (mediaFrame, error) {
 	if m.audioKind == 0 {
-		return nil, nil
+		return mediaFrame{}, nil
 	}
 	if packet.Kind != m.audioKind {
-		return nil, mediaErrorf("reolink: audio kind changed from %d to %d", m.audioKind, packet.Kind)
+		return mediaFrame{}, mediaErrorf("reolink: audio kind changed from %d to %d", m.audioKind, packet.Kind)
 	}
 	if packet.Kind == baichuan.MediaAAC {
 		config, ok := aacConfig(packet.Data)
 		if !ok {
-			return nil, mediaErrorf("reolink: invalid AAC packet")
+			return mediaFrame{}, mediaErrorf("reolink: invalid AAC packet")
 		}
 		if config != m.audioConfig {
-			return nil, mediaErrorf("reolink: AAC configuration changed")
+			return mediaFrame{}, mediaErrorf("reolink: AAC configuration changed")
 		}
 	}
 	payload, samples, err := audioPayload(packet)
 	if err != nil {
-		return nil, err
+		return mediaFrame{}, err
 	}
-	frame := &mediaFrame{
+	frame := mediaFrame{
 		track:   trackAudio,
 		packet:  rtp.Packet{Header: rtp.Header{Timestamp: m.audioTS}, Payload: payload},
 		samples: samples,

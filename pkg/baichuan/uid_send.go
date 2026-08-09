@@ -26,7 +26,6 @@ func (s *uidConn) writeChunk(payload []byte) error {
 		buffer: b, packet: packet, packetID: packetID, firstSend: now, lastSend: now,
 		interval: uidRetransmit, used: true,
 	}
-	s.sendStats.packets++
 	s.sendMu.Unlock()
 	if err = s.writeDatagram(packet); err != nil {
 		s.releaseSend(packetID)
@@ -60,9 +59,6 @@ func (s *uidConn) reserveSend() (uint32, error) {
 			packetID := s.nextSend
 			s.nextSend++
 			s.sendCount++
-			if high := uint64(s.sendCount); high > s.sendStats.windowHigh {
-				s.sendStats.windowHigh = high
-			}
 			s.sendMu.Unlock()
 			return packetID, nil
 		}
@@ -112,7 +108,6 @@ func (s *uidConn) retransmitUID(now time.Time) error {
 			}
 			return fmt.Errorf("baichuan: retransmit UID packet: %w", err)
 		}
-		s.sendStats.retransmits++
 		slot.lastSend = now
 		slot.interval *= 2
 		if slot.interval > uidMaxRetransmit {

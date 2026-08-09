@@ -83,9 +83,7 @@ type Profile struct {
 	talkFormat    baichuan.TalkFormat
 
 	recvBytes    atomic.Uint64
-	recvPackets  atomic.Uint64
 	videoFrames  atomic.Uint64
-	audioFrames  atomic.Uint64
 	audioSamples atomic.Uint64
 
 	trackCheckInterval time.Duration
@@ -216,8 +214,8 @@ func (p *Profile) replay(probe mediaProbe) error {
 		if err != nil {
 			return err
 		}
-		if frame != nil {
-			p.writeFrame(frame)
+		if frame.valid() {
+			p.writeFrame(&frame)
 		}
 	}
 	return nil
@@ -254,8 +252,8 @@ func (p *Profile) read(input profileInput) error {
 		if err != nil {
 			return err
 		}
-		if frame != nil {
-			p.writeFrame(frame)
+		if frame.valid() {
+			p.writeFrame(&frame)
 		}
 	}
 }
@@ -265,7 +263,6 @@ func (p *Profile) writeFrame(frame *mediaFrame) {
 		p.videoFrames.Add(1)
 		p.video.WriteRTP(&frame.packet)
 	} else if frame.track == trackAudio && p.audio != nil {
-		p.audioFrames.Add(1)
 		p.audioSamples.Add(uint64(frame.samples))
 		p.audio.WriteRTP(&frame.packet)
 	}
@@ -336,7 +333,6 @@ func (p *Profile) closeReceivers() {
 }
 
 func (p *Profile) record(packet baichuan.MediaPacket) {
-	p.recvPackets.Add(1)
 	p.recvBytes.Add(uint64(len(packet.Data)))
 }
 

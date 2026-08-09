@@ -48,19 +48,15 @@ func TestProducerDiagnosticsAreRedacted(t *testing.T) {
 		t.Fatalf("credentials exposed in diagnostics: %s", text)
 	}
 	for _, expected := range []string{
-		`"endpoint":"camera:9000"`, `"generation":1`, `"main_sessions":1`,
-		`"profiles":1`, `"video_frames":0`, `"camera_type":"E1 Zoom"`,
+		`"remote_addr":"camera:9000"`, `"generation":1`, `"main_sessions":1`,
+		`"profiles":1`, `"camera_type":"E1 Zoom"`,
 		`"camera_model":"E340"`, `"hardware_version":"IPC_NT14"`,
 		`"firmware_version":"v3.2.0"`, `"device_info_status":"available"`,
 		`"capability_status":"available"`, `"observed_channels":[0]`,
-		`"read_only_capabilities":["version"]`, `"read_write_capabilities":["preview","track"]`,
 	} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("missing %s in diagnostics: %s", expected, text)
 		}
-	}
-	if strings.Contains(text, `"audio_frames"`) {
-		t.Fatalf("zero audio frame count was not omitted: %s", text)
 	}
 	_ = producer.Stop()
 	waitFor(t, opener.input(0).closed.Load)
@@ -90,43 +86,10 @@ func TestProducerDiagnosticsDuringDelivery(t *testing.T) {
 	if err = <-done; !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("unexpected terminal error: %v", err)
 	}
-	diagnostics := producer.diagnostics()
-	if diagnostics.VideoFrames != 1001 || diagnostics.AudioFrames != 1 {
-		t.Fatalf("unexpected frame counters: video=%d audio=%d",
-			diagnostics.VideoFrames, diagnostics.AudioFrames)
+	if video, audio := producer.profile.videoFrames.Load(), producer.profile.audioSamples.Load(); video != 1001 || audio == 0 {
+		t.Fatalf("unexpected liveness state: video=%d audio_samples=%d", video, audio)
 	}
 	_ = producer.Stop()
-}
-
-func TestProducerDiagnosticsExposePreviewRepairs(t *testing.T) {
-	opener := &fakeProfileOpener{}
-	registry := testRegistry(opener.open, sessionBudget{main: 2, other: 10})
-	producer, err := registry.Dial("reolink://admin:secret@camera/main?backchannel=0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	opener.input(0).stats = baichuan.PreviewStats{
-		QueueHighWater: 1234, QueueOverflows: 2, BoundaryAdjustments: 3,
-	}
-	producer.profile.pipeline.paramCandidates.Add(4)
-	producer.profile.pipeline.videoInvalid.Add(5)
-	producer.profile.pipeline.videoDrops.Add(6)
-	producer.profile.pipeline.videoRecoveries.Add(7)
-	data, err := json.Marshal(producer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, expected := range []string{
-		`"preview_queue_high_water_bytes":1234`, `"preview_queue_overflows":2`, `"boundary_adjustments":3`,
-		`"parameter_set_candidates":4`, `"invalid_video_units":5`, `"video_resync_drops":6`, `"video_resyncs":7`,
-	} {
-		if !strings.Contains(string(data), expected) {
-			t.Fatalf("missing %s in diagnostics: %s", expected, data)
-		}
-	}
-	if err = producer.Stop(); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestProducerContinuesAfterDuplicateH264ParameterSets(t *testing.T) {
@@ -141,16 +104,13 @@ func TestProducerContinuesAfterDuplicateH264ParameterSets(t *testing.T) {
 	refresh := testH264Keyframe(1_050_000)
 	refresh.Data = append(append([]byte(nil), refresh.Data[:8]...), refresh.Data...)
 	input := opener.input(0)
+	frames := producer.profile.videoFrames.Load()
 	input.results <- inputResult{packet: refresh}
-	waitFor(t, func() bool { return producer.profile.pipeline.paramVariants.Load() == 1 })
+	waitFor(t, func() bool { return producer.profile.videoFrames.Load() == frames+1 })
 	select {
 	case err = <-done:
 		t.Fatalf("duplicate parameter sets stopped producer: %v", err)
 	default:
-	}
-	data, err := json.Marshal(producer)
-	if err != nil || !strings.Contains(string(data), `"parameter_set_variants":1`) {
-		t.Fatalf("parameter variant missing from diagnostics: data=%s err=%v", data, err)
 	}
 	input.results <- inputResult{err: io.ErrUnexpectedEOF}
 	if err = <-done; !errors.Is(err, io.ErrUnexpectedEOF) {
@@ -172,23 +132,18 @@ func TestProducerResyncsWithoutRestartAfterInvalidVideo(t *testing.T) {
 	go func() { done <- producer.Start() }()
 	waitFor(t, func() bool { return producer.profile.startCtx.Err() != nil })
 	input := opener.input(0)
+	frames := producer.profile.videoFrames.Load()
 	input.results <- inputResult{packet: baichuan.MediaPacket{
 		Kind: baichuan.MediaVideoP, Codec: "H264", Timestamp: 1_050_000,
 		Data: []byte{0, 0, 0, 1, 0xc1, 1},
 	}}
 	input.results <- inputResult{packet: testH264PFrame(1_100_000)}
 	input.results <- inputResult{packet: testH264Keyframe(1_150_000)}
-	waitFor(t, func() bool { return producer.profile.pipeline.videoRecoveries.Load() == 1 })
+	waitFor(t, func() bool { return producer.profile.videoFrames.Load() == frames+1 })
 	select {
 	case err = <-done:
 		t.Fatalf("video repair stopped producer: %v", err)
 	default:
-	}
-	data, err := json.Marshal(producer)
-	if err != nil || !strings.Contains(string(data), `"invalid_video_units":1`) ||
-		!strings.Contains(string(data), `"video_resync_drops":2`) ||
-		!strings.Contains(string(data), `"video_resyncs":1`) {
-		t.Fatalf("video repair missing from diagnostics: data=%s err=%v", data, err)
 	}
 	input.results <- inputResult{err: io.ErrUnexpectedEOF}
 	if err = <-done; !errors.Is(err, io.ErrUnexpectedEOF) {
@@ -264,9 +219,6 @@ func TestProfileProbeSkipsInvalidInitialVideoKeyframe(t *testing.T) {
 	}
 	if profile.pipeline.videoMedia == nil || profile.pipeline.videoCodec != "H265" {
 		t.Fatal("probe did not configure the valid replacement keyframe")
-	}
-	if profile.pipeline.videoInvalid.Load() != 1 {
-		t.Fatalf("invalid video units = %d, want 1", profile.pipeline.videoInvalid.Load())
 	}
 	if len(probe.packets) != 2 || probe.packets[0].Kind != baichuan.MediaVideoI {
 		t.Fatalf("unexpected retained probe: packets=%d", len(probe.packets))
@@ -450,15 +402,5 @@ func TestErrorClassUsesTypedMediaErrors(t *testing.T) {
 	}
 	if class := errorClass(errors.New("reolink: invalid request")); class != "protocol" {
 		t.Fatalf("classified protocol error as %q", class)
-	}
-}
-
-func BenchmarkProfileFrameDelivery(b *testing.B) {
-	profile := deliveryTestProfile()
-	frame := &mediaFrame{track: trackVideo, packet: rtp.Packet{Payload: make([]byte, 1<<20)}}
-	b.ReportAllocs()
-	b.SetBytes(int64(len(frame.packet.Payload)))
-	for b.Loop() {
-		profile.writeFrame(frame)
 	}
 }

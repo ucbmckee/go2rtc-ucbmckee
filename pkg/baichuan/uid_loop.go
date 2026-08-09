@@ -23,13 +23,11 @@ func (s *uidConn) readLoop() {
 		}
 		if remote != s.remote {
 			s.putBuffer(b)
-			s.recordUIDForeign()
 			continue
 		}
 		packet, err := parseUIDPacket(b[:n], uidMTU-uidDataHeader)
 		if err != nil {
 			s.putBuffer(b)
-			s.recordUIDInvalid()
 			continue
 		}
 		switch packet.magic {
@@ -38,7 +36,6 @@ func (s *uidConn) readLoop() {
 			s.putBuffer(b)
 		case uidMagicData:
 			if packet.connectionID != s.clientID {
-				s.recordUIDInvalid()
 				s.putBuffer(b)
 			} else if !s.handleUIDData(packet, b) {
 				s.putBuffer(b)
@@ -54,17 +51,14 @@ func (s *uidConn) readLoop() {
 
 func (s *uidConn) handleUIDAck(packet uidPacket) {
 	if packet.connectionID != s.clientID || len(packet.payload) > uidSendWindow {
-		s.recordUIDInvalid()
 		return
 	}
 	s.sendMu.Lock()
 	distance := uint32(s.nextSend - packet.packetID)
 	if distance == 0 || distance > uidSendWindow {
 		s.sendMu.Unlock()
-		s.recordUIDInvalid()
 		return
 	}
-	s.sendStats.acks++
 	freed := false
 	for i := range s.sendSlots {
 		slot := &s.sendSlots[i]
@@ -93,13 +87,11 @@ func (s *uidConn) handleUIDData(packet uidPacket, b *uidBuffer) bool {
 	s.receiveMu.Lock()
 	distance := int32(packet.packetID - s.nextReceive)
 	if distance < 0 {
-		s.receiveStats.duplicates++
 		s.ackDirty = s.received
 		s.receiveMu.Unlock()
 		return false
 	}
 	if distance >= uidReceiveWindow {
-		s.receiveStats.outOfWindow++
 		s.ackDirty = s.received
 		s.receiveMu.Unlock()
 		return false
@@ -107,16 +99,11 @@ func (s *uidConn) handleUIDData(packet uidPacket, b *uidBuffer) bool {
 	index := packet.packetID % uidReceiveWindow
 	slot := &s.receiveSlots[index]
 	if slot.used {
-		s.receiveStats.duplicates++
 		s.ackDirty = s.received
 		s.receiveMu.Unlock()
 		return false
 	}
 	s.receiveCount++
-	s.receiveStats.packets++
-	if high := uint64(s.receiveCount); high > s.receiveStats.windowHigh {
-		s.receiveStats.windowHigh = high
-	}
 	*slot = uidReceiveSlot{
 		packetID: packet.packetID,
 		chunk:    uidChunk{buffer: b, data: packet.payload},
@@ -135,9 +122,6 @@ func (s *uidConn) handleUIDData(packet uidPacket, b *uidBuffer) bool {
 		s.received = true
 		select {
 		case s.readQueue <- chunk:
-			if high := uint64(len(s.readQueue)); high > s.receiveStats.queueHigh {
-				s.receiveStats.queueHigh = high
-			}
 		case <-s.done:
 			s.putBuffer(chunk.buffer)
 			s.receiveMu.Unlock()
@@ -162,10 +146,8 @@ func (s *uidConn) handleUIDControl(packet uidPacket) {
 		} `xml:"D2C_DISC"`
 	}
 	if xml.Unmarshal(packet.payload, &envelope) != nil {
-		s.recordUIDInvalid()
 		return
 	}
-	s.recordUIDControl()
 	if envelope.Disconnect != nil &&
 		envelope.Disconnect.CID == s.clientID && envelope.Disconnect.DID == s.cameraID {
 		s.shutdown(fmt.Errorf("baichuan: camera closed UID transport"))
@@ -211,7 +193,6 @@ func (s *uidConn) writeUIDAck() error {
 		}
 	}
 	s.ackDirty = false
-	s.receiveStats.acks++
 	s.receiveMu.Unlock()
 
 	b := s.getBuffer()
