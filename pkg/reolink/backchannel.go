@@ -157,7 +157,11 @@ func (b *backchannel) Write(payload []byte) error {
 			return err
 		}
 		b.producer.addSend(len(block))
-		b.samples = b.samples[blockSize:]
+		if len(b.samples) == blockSize {
+			b.samples = b.samples[:0]
+		} else {
+			b.samples = b.samples[blockSize:]
+		}
 	}
 	b.idleAt = time.Now().Add(talkIdleTimeout)
 	if b.idle == nil {

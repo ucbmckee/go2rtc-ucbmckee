@@ -45,11 +45,11 @@ func parseURL(rawURL string) (source, error) {
 	creds.AddSecret(password)
 
 	query, err := url.ParseQuery(u.RawQuery)
-	if query.Get("transport") == "uid" {
-		creds.AddSecret(u.Hostname())
-	}
 	if err != nil {
 		return source{}, fmt.Errorf("reolink: invalid query")
+	}
+	if query.Get("transport") == "uid" {
+		creds.AddSecret(u.Hostname())
 	}
 	for key, values := range query {
 		if key != "channel" && key != "stream" && key != "backchannel" && key != "transport" &&

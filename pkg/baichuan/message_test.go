@@ -47,6 +47,24 @@ func TestReadFrameBounds(t *testing.T) {
 	}
 }
 
+func TestReadFrameRejectsControlPayloadBeforeRead(t *testing.T) {
+	limits := testLimits(t)
+	for command, limit := range map[uint32]uint32{
+		commandLogin: maxNonceBody, commandTalkAbility: maxTalkAbilityBody,
+		commandDeviceInfo: maxDeviceInfoBody, commandAbility: maxCapabilityBody,
+	} {
+		header := make([]byte, 20)
+		binary.LittleEndian.PutUint32(header, wireMagic)
+		binary.LittleEndian.PutUint32(header[4:], command)
+		binary.LittleEndian.PutUint32(header[8:], limit+1)
+		binary.LittleEndian.PutUint16(header[18:], classLegacy)
+		if _, err := readFrame(bytes.NewReader(header), limits); err == nil ||
+			!strings.Contains(err.Error(), "payload") {
+			t.Fatalf("command %d read oversized payload: %v", command, err)
+		}
+	}
+}
+
 func TestDecodeFrame(t *testing.T) {
 	state := cipherState{mode: encryptionBC}
 	ext := []byte("<body><binaryData>1</binaryData></body>")

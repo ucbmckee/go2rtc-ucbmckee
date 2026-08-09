@@ -52,34 +52,45 @@ func canEncodeToAVCCInPlace(data []byte) bool {
 	}
 }
 
-func validAVCC(data []byte, minNALU int) bool {
-	if len(data) < 4+minNALU {
-		return false
-	}
-	for len(data) >= 4 {
-		size := binary.BigEndian.Uint32(data)
-		if size < uint32(minNALU) || uint64(size) > uint64(len(data)-4) {
-			return false
-		}
-		data = data[4+int(size):]
-	}
-	return len(data) == 0
+func validVideoConfig(codec string, data []byte) bool {
+	valid, err := inspectVideoPayload(codec, data)
+	return err == nil && valid
 }
 
-func validVideoConfig(codec string, data []byte) bool {
-	if validateVideoPayload(codec, data) != nil {
-		return false
+func inspectVideoPayload(codec string, data []byte) (bool, error) {
+	minNALU := 1
+	if codec == "H265" {
+		minNALU = 2
+	} else if codec != "H264" {
+		return false, fmt.Errorf("unsupported codec %q", codec)
+	}
+	if len(data) < 4+minNALU {
+		return false, fmt.Errorf("invalid AVCC framing")
 	}
 	var first, second, third, keyframe bool
+	index := 0
 	for len(data) != 0 {
-		size := int(binary.BigEndian.Uint32(data))
-		nalu := data[4 : 4+size]
+		if len(data) < 4 {
+			return false, fmt.Errorf("invalid AVCC framing")
+		}
+		size := binary.BigEndian.Uint32(data)
+		if size < uint32(minNALU) || uint64(size) > uint64(len(data)-4) {
+			return false, fmt.Errorf("invalid AVCC framing")
+		}
+		nalu := data[4 : 4+int(size)]
 		switch codec {
 		case "H264":
-			switch nalu[0] & 0x1f {
+			typeID := nalu[0] & 0x1f
+			if nalu[0]&0x80 != 0 {
+				return false, fmt.Errorf("NAL %d has forbidden bit", index)
+			}
+			if typeID == 0 || typeID >= 24 {
+				return false, fmt.Errorf("NAL %d has type %d", index, typeID)
+			}
+			switch typeID {
 			case h264.NALUTypeSPS:
 				if len(nalu) < 4 {
-					return false
+					return false, nil
 				}
 				first = true
 			case h264.NALUTypePPS:
@@ -88,10 +99,17 @@ func validVideoConfig(codec string, data []byte) bool {
 				keyframe = true
 			}
 		case "H265":
-			if len(nalu) < 2 {
-				return false
+			typeID := (nalu[0] >> 1) & 0x3f
+			if nalu[0]&0x80 != 0 {
+				return false, fmt.Errorf("NAL %d has forbidden bit", index)
 			}
-			switch (nalu[0] >> 1) & 0x3f {
+			if typeID >= 48 {
+				return false, fmt.Errorf("NAL %d has type %d", index, typeID)
+			}
+			if nalu[1]&7 == 0 {
+				return false, fmt.Errorf("NAL %d has temporal ID zero", index)
+			}
+			switch typeID {
 			case h265.NALUTypeVPS:
 				first = true
 			case h265.NALUTypeSPS:
@@ -101,55 +119,14 @@ func validVideoConfig(codec string, data []byte) bool {
 			case h265.NALUTypeIFrame, h265.NALUTypeIFrame2, h265.NALUTypeIFrame3:
 				keyframe = true
 			}
-		default:
-			return false
 		}
-		data = data[4+size:]
-	}
-	if codec == "H264" {
-		return first && second && keyframe
-	}
-	return first && second && third && keyframe
-}
-
-func validateVideoPayload(codec string, data []byte) error {
-	minNALU := 1
-	if codec == "H265" {
-		minNALU = 2
-	} else if codec != "H264" {
-		return fmt.Errorf("unsupported codec %q", codec)
-	}
-	if !validAVCC(data, minNALU) {
-		return fmt.Errorf("invalid AVCC framing")
-	}
-	index := 0
-	for len(data) != 0 {
-		size := int(binary.BigEndian.Uint32(data))
-		nalu := data[4 : 4+size]
-		if codec == "H264" {
-			typeID := nalu[0] & 0x1f
-			if nalu[0]&0x80 != 0 {
-				return fmt.Errorf("NAL %d has forbidden bit", index)
-			}
-			if typeID == 0 || typeID >= 24 {
-				return fmt.Errorf("NAL %d has type %d", index, typeID)
-			}
-		} else {
-			typeID := (nalu[0] >> 1) & 0x3f
-			if nalu[0]&0x80 != 0 {
-				return fmt.Errorf("NAL %d has forbidden bit", index)
-			}
-			if typeID >= 48 {
-				return fmt.Errorf("NAL %d has type %d", index, typeID)
-			}
-			if nalu[1]&7 == 0 {
-				return fmt.Errorf("NAL %d has temporal ID zero", index)
-			}
-		}
-		data = data[4+size:]
+		data = data[4+int(size):]
 		index++
 	}
-	return nil
+	if codec == "H264" {
+		return first && second && keyframe, nil
+	}
+	return first && second && third && keyframe, nil
 }
 
 func h264ParameterSignature(data []byte) (string, error) {

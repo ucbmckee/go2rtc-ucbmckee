@@ -138,7 +138,12 @@ func (p *Profile) run() {
 		err = p.read(input)
 	}
 	failed := p.beginTerminal(err)
-	closeErr := input.Close()
+	var closeErr error
+	if failed {
+		closeErr = input.Abort()
+	} else {
+		closeErr = input.Close()
+	}
 	if failed && closeErr != nil {
 		p.joinTerminal(closeErr)
 	}
@@ -165,9 +170,6 @@ func (p *Profile) probe(input profileInput) (mediaProbe, error) {
 		}
 		packet, err := input.Read(ctx)
 		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) && !p.source.suppressVideo && p.pipeline.videoMedia != nil {
-				break
-			}
 			return mediaProbe{}, fmt.Errorf("reolink: probe media: %w", err)
 		}
 		p.record(packet)
@@ -449,7 +451,7 @@ func errorClass(err error) string {
 		return "canceled"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
-	case errors.Is(err, io.EOF):
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
 		return "eof"
 	}
 	var netErr net.Error

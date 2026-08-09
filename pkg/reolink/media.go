@@ -172,12 +172,13 @@ func (m *mediaPipeline) videoFrame(packet baichuan.MediaPacket) (mediaFrame, err
 		return mediaFrame{}, mediaErrorf("reolink: video codec changed from %s to %s", m.videoCodec, packet.Codec)
 	}
 	payload := encodeOwnedToAVCC(packet.Data)
-	if validateVideoPayload(packet.Codec, payload) != nil {
+	config, err := inspectVideoPayload(packet.Codec, payload)
+	if err != nil {
 		m.suppressInvalidVideo()
 		return mediaFrame{}, nil
 	}
 	if packet.Kind == baichuan.MediaVideoI {
-		if !validVideoConfig(packet.Codec, payload) {
+		if !config {
 			m.suppressInvalidVideo()
 			return mediaFrame{}, nil
 		}

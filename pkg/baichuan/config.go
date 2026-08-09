@@ -20,8 +20,8 @@ const (
 	defaultMaxExtension   = 64 << 10
 	defaultMaxPending     = 64
 	defaultMaxMediaFrame  = 16 << 20
-	defaultMaxMediaBuffer = 32 << 20
 	defaultMaxResync      = 64 << 10
+	defaultMaxMediaBuffer = defaultMaxMediaFrame + defaultMaxResync + mediaVideoHeaderSize
 )
 
 // Limits bounds memory controlled by a camera or slow peer.
@@ -58,8 +58,8 @@ func (l Limits) normalized() (Limits, error) {
 		l.MaxMediaFrame > 64<<20 || l.MaxMediaBuffer > 128<<20 || l.MaxResync > 1<<20 {
 		return Limits{}, fmt.Errorf("baichuan: limits exceed hard ceiling")
 	}
-	if l.MaxPending < 1 || l.MaxExtension > l.MaxBody ||
-		l.MaxMediaBuffer < l.MaxMediaFrame || l.MaxResync > l.MaxMediaBuffer {
+	if l.MaxPending < 1 || l.MaxExtension > l.MaxBody || l.MaxResync > l.MaxMediaBuffer ||
+		uint64(l.MaxMediaFrame)+uint64(l.MaxResync)+mediaVideoHeaderSize > uint64(l.MaxMediaBuffer) {
 		return Limits{}, fmt.Errorf("baichuan: inconsistent limits")
 	}
 	return l, nil

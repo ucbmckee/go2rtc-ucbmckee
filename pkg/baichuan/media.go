@@ -7,6 +7,8 @@ import (
 )
 
 const (
+	mediaVideoHeaderSize = 24
+
 	mediaInfoV1    = 0x31303031
 	mediaInfoV2    = 0x32303031
 	mediaIFrameMin = 0x63643030
@@ -46,6 +48,7 @@ type MediaPacket struct {
 type MediaParser struct {
 	limits Limits
 	buf    []byte
+	scan   int
 }
 
 func NewMediaParser(limits Limits) (*MediaParser, error) {
@@ -87,6 +90,7 @@ func (p *MediaParser) appendOwnedTo(data []byte, packets []MediaPacket) ([]Media
 		if !complete {
 			break
 		}
+		p.scan = 0
 		p.buf = p.buf[size:]
 		packets = append(packets, packet)
 	}
@@ -131,7 +135,7 @@ func (p *MediaParser) parsePacket(b []byte) (MediaPacket, int, bool, error) {
 }
 
 func (p *MediaParser) parseVideo(b []byte, keyframe bool) (MediaPacket, int, bool, error) {
-	const headerSize = 24
+	const headerSize = mediaVideoHeaderSize
 	if len(b) < headerSize {
 		return MediaPacket{}, 0, false, nil
 	}
@@ -171,16 +175,16 @@ func (p *MediaParser) parseVideo(b []byte, keyframe bool) (MediaPacket, int, boo
 }
 
 func (p *MediaParser) parseIFrame(b []byte, codec string, payload, extra uint32) (MediaPacket, int, bool, error) {
-	const headerSize = 24
+	const headerSize = mediaVideoHeaderSize
 	dataStart := uint64(headerSize) + uint64(extra)
 	plain := dataStart + uint64(payload)
 	declared := plain + uint64(padding(payload))
 	if declared > uint64(p.limits.MaxMediaFrame) {
 		return MediaPacket{}, 0, false, fmt.Errorf("baichuan: video frame %d exceeds limit %d", declared, p.limits.MaxMediaFrame)
 	}
-	size, complete := findVideoBoundary(b, int(dataStart), declared, p.limits.MaxResync)
+	size, complete := p.findVideoBoundary(b, int(dataStart), declared)
 	if !complete {
-		if uint64(len(b)) > declared+uint64(p.limits.MaxResync) {
+		if uint64(len(b)) >= declared+uint64(p.limits.MaxResync)+mediaVideoHeaderSize {
 			return MediaPacket{}, 0, false, fmt.Errorf("baichuan: no keyframe boundary near declared size %d extra header %d", declared, extra)
 		}
 		return MediaPacket{}, 0, false, nil
@@ -203,25 +207,43 @@ func (p *MediaParser) parseIFrame(b []byte, codec string, payload, extra uint32)
 	}, size, true, nil
 }
 
-func findVideoBoundary(b []byte, headerSize int, declared uint64, resync uint32) (int, bool) {
+func (p *MediaParser) findVideoBoundary(b []byte, headerSize int, declared uint64) (int, bool) {
 	if offset := int(declared); offset <= len(b)-8 && plausibleMediaHeader(b[offset:]) {
 		return offset, true
 	}
-	start := int(declared) - int(resync)
+	start := int(declared) - int(p.limits.MaxResync)
 	if start < headerSize {
 		start = headerSize
 	}
-	end := int(declared) + int(resync)
-	if end > len(b)-7 {
-		end = len(b) - 7
+	if p.scan < start {
+		p.scan = start
 	}
-	best := -1
-	for i := start; i <= end; i++ {
+	end := int(declared) + int(p.limits.MaxResync)
+	if end > len(b)-8 {
+		end = len(b) - 8
+	}
+	best, pending := -1, -1
+	for i := p.scan; i <= end; i++ {
 		if plausibleMediaHeader(b[i:]) && (best < 0 || abs(i-int(declared)) < abs(best-int(declared))) {
 			best = i
+		} else if pending < 0 && partialVideoHeader(b[i:]) {
+			pending = i
 		}
 	}
+	if pending >= 0 {
+		p.scan = pending
+	} else if end >= p.scan {
+		p.scan = end + 1
+	}
 	return best, best >= 0
+}
+
+func partialVideoHeader(b []byte) bool {
+	if len(b) >= mediaVideoHeaderSize {
+		return false
+	}
+	magic := binary.LittleEndian.Uint32(b)
+	return magic >= mediaIFrameMin && magic <= mediaIFrameMax || magic >= mediaPFrameMin && magic <= mediaPFrameMax
 }
 
 func plausibleMediaHeader(b []byte) bool {
@@ -233,7 +255,7 @@ func plausibleMediaHeader(b []byte) bool {
 	case magic == mediaInfoV1 || magic == mediaInfoV2:
 		return binary.LittleEndian.Uint32(b[4:8]) == 32
 	case magic >= mediaIFrameMin && magic <= mediaIFrameMax || magic >= mediaPFrameMin && magic <= mediaPFrameMax:
-		if len(b) < 24 {
+		if len(b) < mediaVideoHeaderSize {
 			return false
 		}
 		codec := binary.LittleEndian.Uint32(b[4:8])

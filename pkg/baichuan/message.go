@@ -103,12 +103,36 @@ func readFrame(r io.Reader, limits Limits) (frame, error) {
 			return frame{}, fmt.Errorf("baichuan: invalid payload offset %d for body %d", h.PayloadOffset, h.BodyLen)
 		}
 	}
+	payload := h.BodyLen - h.PayloadOffset
+	if limit := payloadLimit(h.Command, limits); payload > limit {
+		return frame{}, fmt.Errorf("baichuan: command %d payload %d exceeds limit %d", h.Command, payload, limit)
+	}
 
 	body := make([]byte, h.BodyLen)
 	if _, err := io.ReadFull(r, body); err != nil {
 		return frame{}, err
 	}
 	return frame{header: h, body: body}, nil
+}
+
+func payloadLimit(command uint32, limits Limits) uint32 {
+	var limit uint32
+	switch command {
+	case commandLogin:
+		limit = maxNonceBody
+	case commandTalkAbility:
+		limit = maxTalkAbilityBody
+	case commandDeviceInfo:
+		limit = maxDeviceInfoBody
+	case commandAbility:
+		limit = maxCapabilityBody
+	default:
+		return limits.MaxBody
+	}
+	if limit > limits.MaxBody {
+		return limits.MaxBody
+	}
+	return limit
 }
 
 func decodeFrame(value frame, cipher cipherState, binaryHint bool) (message, error) {

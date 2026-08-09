@@ -14,6 +14,7 @@ type profileInput interface {
 	Read(context.Context) (baichuan.MediaPacket, error)
 	ProbeTalk(context.Context, uint8) (baichuan.TalkFormat, error)
 	Discovery() discoverySnapshot
+	Abort() error
 	Close() error
 }
 
@@ -230,8 +231,20 @@ func (i *baichuanInput) ProbeTalk(ctx context.Context, channel uint8) (baichuan.
 }
 
 func (i *baichuanInput) Close() error {
+	return i.close(true)
+}
+
+func (i *baichuanInput) Abort() error {
+	return i.close(false)
+}
+
+func (i *baichuanInput) close(graceful bool) error {
 	i.once.Do(func() {
-		i.err = errors.Join(i.preview.Close(), i.client.Close())
+		if graceful {
+			i.err = errors.Join(i.preview.Close(), i.client.Close())
+		} else {
+			i.err = errors.Join(i.client.Close(), i.preview.Close())
+		}
 	})
 	return i.err
 }

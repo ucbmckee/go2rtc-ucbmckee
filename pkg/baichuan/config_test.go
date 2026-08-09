@@ -110,7 +110,8 @@ func TestLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if limits.MaxBody != defaultMaxBody || limits.MaxPending != defaultMaxPending {
+	if limits.MaxBody != defaultMaxBody || limits.MaxPending != defaultMaxPending ||
+		limits.MaxMediaBuffer != defaultMaxMediaBuffer {
 		t.Fatalf("unexpected defaults: %+v", limits)
 	}
 	if _, err = (Limits{MaxBody: 65 << 20}).normalized(); err == nil {

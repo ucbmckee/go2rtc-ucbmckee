@@ -30,6 +30,7 @@ type fakeProfileInput struct {
 	talkErr   error
 	talks     atomic.Uint32
 	closed    atomic.Bool
+	aborted   atomic.Bool
 	closeErr  error
 	discovery discoverySnapshot
 }
@@ -65,7 +66,16 @@ func (i *fakeProfileInput) Discovery() discoverySnapshot {
 }
 
 func (i *fakeProfileInput) Close() error {
+	return i.close(false)
+}
+
+func (i *fakeProfileInput) Abort() error {
+	return i.close(true)
+}
+
+func (i *fakeProfileInput) close(aborted bool) error {
 	i.once.Do(func() {
+		i.aborted.Store(aborted)
 		i.closed.Store(true)
 		close(i.done)
 	})

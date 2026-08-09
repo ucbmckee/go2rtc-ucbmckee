@@ -225,7 +225,7 @@ func TestMediaParserUnpaddedFragmentDoesNotConsumeNextHeader(t *testing.T) {
 }
 
 func TestMediaParserFrameLimit(t *testing.T) {
-	p, err := NewMediaParser(Limits{MaxMediaFrame: 64, MaxMediaBuffer: 128, MaxResync: 64})
+	p, err := NewMediaParser(Limits{MaxMediaFrame: 64, MaxMediaBuffer: 160, MaxResync: 64})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestMediaParserFrameLimit(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	p, _ = NewMediaParser(Limits{MaxMediaFrame: 64, MaxMediaBuffer: 128, MaxResync: 64})
+	p, _ = NewMediaParser(Limits{MaxMediaFrame: 64, MaxMediaBuffer: 160, MaxResync: 64})
 	binary.LittleEndian.PutUint32(b, mediaIFrameMin)
 	binary.LittleEndian.PutUint32(b[8:12], 0)
 	binary.LittleEndian.PutUint32(b[12:16], ^uint32(0))
@@ -245,7 +245,7 @@ func TestMediaParserFrameLimit(t *testing.T) {
 		t.Fatalf("unexpected I-frame error: %v", err)
 	}
 
-	p, _ = NewMediaParser(Limits{MaxMediaFrame: 64, MaxMediaBuffer: 128, MaxResync: 64})
+	p, _ = NewMediaParser(Limits{MaxMediaFrame: 64, MaxMediaBuffer: 160, MaxResync: 64})
 	b = make([]byte, 72)
 	binary.LittleEndian.PutUint32(b, mediaIFrameMin)
 	copy(b[4:8], "H264")
@@ -256,12 +256,61 @@ func TestMediaParserFrameLimit(t *testing.T) {
 	}
 }
 
-func TestMediaParserAppendLimit(t *testing.T) {
-	p, err := NewMediaParser(Limits{MaxMediaFrame: 64, MaxMediaBuffer: 128, MaxResync: 64})
+func TestMediaParserScansFragmentedKeyframeLinearly(t *testing.T) {
+	const resync = 4096
+	p, err := NewMediaParser(Limits{MaxMediaFrame: 64, MaxMediaBuffer: 8192, MaxResync: resync})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = p.Append(make([]byte, 129)); err == nil || !strings.Contains(err.Error(), "media buffer exceeds limit 128") {
+	header := make([]byte, 24)
+	binary.LittleEndian.PutUint32(header, mediaIFrameMin)
+	copy(header[4:8], "H264")
+	if _, err = p.Append(header); err != nil {
+		t.Fatal(err)
+	}
+	previous := len(header)
+	for range resync + 24 {
+		_, err = p.Append([]byte{0})
+		if p.scan != 0 {
+			if p.scan-previous > 1 {
+				t.Fatalf("rescanned %d keyframe offsets", p.scan-previous)
+			}
+			previous = p.scan
+		}
+	}
+	if err == nil || !strings.Contains(err.Error(), "no keyframe boundary") {
+		t.Fatalf("unexpected fragmented keyframe result: %v", err)
+	}
+}
+
+func TestMediaParserAcceptsKeyframeBoundaryAtResyncLimit(t *testing.T) {
+	const resync = 64
+	p, err := NewMediaParser(Limits{MaxMediaFrame: 128, MaxMediaBuffer: 216, MaxResync: resync})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := make([]byte, 24+resync+24)
+	binary.LittleEndian.PutUint32(b, mediaIFrameMin)
+	copy(b[4:8], "H264")
+	next := 24 + resync
+	binary.LittleEndian.PutUint32(b[next:], mediaPFrameMin)
+	copy(b[next+4:next+8], "H264")
+	packets, err := p.Append(b[:next+8])
+	if err != nil || len(packets) != 0 {
+		t.Fatalf("rejected partial boundary: packets=%d err=%v", len(packets), err)
+	}
+	packets, err = p.Append(b[next+8:])
+	if err != nil || len(packets) != 2 {
+		t.Fatalf("unexpected boundary result: packets=%d err=%v", len(packets), err)
+	}
+}
+
+func TestMediaParserAppendLimit(t *testing.T) {
+	p, err := NewMediaParser(Limits{MaxMediaFrame: 64, MaxMediaBuffer: 160, MaxResync: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = p.Append(make([]byte, 161)); err == nil || !strings.Contains(err.Error(), "media buffer exceeds limit 160") {
 		t.Fatalf("unexpected append error: %v", err)
 	}
 	if p.buf != nil {

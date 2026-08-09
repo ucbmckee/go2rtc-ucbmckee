@@ -88,6 +88,9 @@ func TestProducerDiagnosticsDuringDelivery(t *testing.T) {
 	if err = <-done; !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("unexpected terminal error: %v", err)
 	}
+	if !input.aborted.Load() {
+		t.Fatal("terminal failure closed input gracefully")
+	}
 	if video, audio := producer.profile.videoFrames.Load(), producer.profile.audioSamples.Load(); video != 1001 || audio == 0 {
 		t.Fatalf("unexpected liveness state: video=%d audio_samples=%d", video, audio)
 	}
@@ -172,8 +175,12 @@ func TestProducerStartReplaysProbeAfterTrackAttachment(t *testing.T) {
 	if err = <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("unexpected stop error: %v", err)
 	}
-	if !opener.input(0).closed.Load() {
+	input := opener.input(0)
+	if !input.closed.Load() {
 		t.Fatal("producer stop returned before its input closed")
+	}
+	if input.aborted.Load() {
+		t.Fatal("producer stop aborted input")
 	}
 }
 
@@ -195,6 +202,17 @@ func TestProfileProbeSkipsInvalidInitialVideoKeyframe(t *testing.T) {
 	}
 	if len(probe.packets) != 2 || probe.packets[0].Kind != baichuan.MediaVideoI {
 		t.Fatalf("unexpected retained probe: packets=%d", len(probe.packets))
+	}
+}
+
+func TestProfileProbeRequiresEnabledAudio(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	input := &fakeProfileInput{results: make(chan inputResult, 1), done: make(chan struct{})}
+	input.results <- inputResult{packet: testH264Keyframe(1_000_000)}
+	profile := &Profile{ctx: ctx}
+	if _, err := profile.probe(input); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("missing audio did not fail probe: %v", err)
 	}
 }
 
@@ -375,5 +393,8 @@ func TestErrorClassUsesTypedMediaErrors(t *testing.T) {
 	}
 	if class := errorClass(errors.New("reolink: invalid request")); class != "protocol" {
 		t.Fatalf("classified protocol error as %q", class)
+	}
+	if class := errorClass(io.ErrUnexpectedEOF); class != "eof" {
+		t.Fatalf("classified truncated network frame as %q", class)
 	}
 }
