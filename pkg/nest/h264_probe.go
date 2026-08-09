@@ -13,7 +13,11 @@ import (
 type h264Probe struct {
 	media   *core.Media
 	track   *core.Receiver
-	sources []*core.Receiver
+	forward core.HandlerFunc
+	sources []*h264ProbeSource
+
+	active atomic.Uint64
+	closed atomic.Bool
 
 	handoffOnce    sync.Once
 	handoffStarted atomic.Bool
@@ -32,34 +36,71 @@ type h264Probe struct {
 	watchdogRestarts   atomic.Uint64
 	readyBeforeHandoff atomic.Bool
 	readyAfterHandoff  atomic.Int64
-
-	haveSPS  bool
-	havePPS  bool
-	afterSPS bool
-	afterPPS bool
-	parser   h264RTPParser
+	readyIDRs          atomic.Uint64
 }
+
+type h264ProbeSource struct {
+	id           uint32
+	track        *core.Receiver
+	parser       h264RTPParser
+	params       uint8
+	after        uint8
+	payload      uint16
+	handoffReset bool
+}
+
+const (
+	h264SPSSeen = 1 << iota
+	h264PPSSeen
+)
 
 func newH264Probe(media *core.Media, codec *core.Codec, source *core.Receiver) *h264Probe {
 	track := core.NewReceiver(media, codec)
-	probe := &h264Probe{media: media, track: track, sources: []*core.Receiver{source}}
-	forward := track.Input
-	track.Input = func(packet *rtp.Packet) {
-		probe.inspect(packet)
-		forward(packet)
-	}
+	input := &h264ProbeSource{id: 1, track: source}
+	probe := &h264Probe{media: media, track: track, forward: track.Input, sources: []*h264ProbeSource{input}}
+	track.Input = probe.input(input)
 	track.WithParent(&source.Node)
 	return probe
 }
 
 func (p *h264Probe) addSource(source *core.Receiver) {
 	for _, current := range p.sources {
-		if current == source {
+		if current.track == source {
 			return
 		}
 	}
-	p.sources = append(p.sources, source)
-	source.AppendChild(&core.Node{Input: p.track.Input})
+	input := &h264ProbeSource{id: uint32(len(p.sources) + 1), track: source}
+	p.sources = append(p.sources, input)
+	source.AppendChild(&core.Node{Input: p.input(input)})
+}
+
+func (p *h264Probe) input(source *h264ProbeSource) core.HandlerFunc {
+	return func(packet *rtp.Packet) {
+		if packet == nil {
+			p.malformed.Add(1)
+			return
+		}
+		if p.closed.Load() {
+			return
+		}
+		stream := uint64(source.id)<<32 | uint64(packet.SSRC)
+		active := p.active.Load()
+		if active == 0 {
+			p.active.CompareAndSwap(0, stream)
+			active = p.active.Load()
+		}
+		if active != stream {
+			return
+		}
+		p.inspectSource(source, packet)
+		if !p.closed.Load() {
+			p.forward(packet)
+		}
+	}
+}
+
+func (p *h264Probe) close() {
+	p.closed.Store(true)
 }
 
 func (p *h264Probe) beginHandoff() {
@@ -69,40 +110,52 @@ func (p *h264Probe) beginHandoff() {
 	})
 }
 
-func (p *h264Probe) inspect(packet *rtp.Packet) {
+func (p *h264Probe) inspectSource(source *h264ProbeSource, packet *rtp.Packet) {
 	p.packets.Add(1)
-	if !p.parser.eachNALU(packet, p.inspectNALU) {
+	payload := uint16(packet.PayloadType) + 1
+	if source.payload != payload {
+		source.parser = h264RTPParser{}
+		source.params, source.after = 0, 0
+		source.payload = payload
+	}
+	afterHandoff := p.handoffStarted.Load()
+	if afterHandoff && !source.handoffReset {
+		source.parser = h264RTPParser{}
+		source.handoffReset = true
+	}
+	if !source.parser.eachNALU(packet, func(typ byte) { p.inspectNALU(source, typ, afterHandoff) }) {
 		p.malformed.Add(1)
 	}
 }
 
-func (p *h264Probe) inspectNALU(typ byte) {
-	afterHandoff := p.handoffStarted.Load()
+func (p *h264Probe) inspectNALU(source *h264ProbeSource, typ byte, afterHandoff bool) {
+	var param uint8
 	switch typ {
 	case h264.NALUTypeSPS:
-		p.haveSPS = true
+		param = h264SPSSeen
 		p.sps.Add(1)
-		if afterHandoff {
-			p.afterSPS = true
-			p.psAfterHandoff.Add(1)
-		}
 	case h264.NALUTypePPS:
-		p.havePPS = true
+		param = h264PPSSeen
 		p.pps.Add(1)
-		if afterHandoff {
-			p.afterPPS = true
-			p.psAfterHandoff.Add(1)
-		}
 	case h264.NALUTypeIFrame:
 		p.idrs.Add(1)
 		if afterHandoff {
 			p.idrsAfterHandoff.Add(1)
-			if p.afterSPS && p.afterPPS {
+			if source.after == h264SPSSeen|h264PPSSeen {
+				p.readyIDRs.Add(1)
 				p.markHandoffReady()
 			}
-		} else if p.haveSPS && p.havePPS {
+		} else if source.params == h264SPSSeen|h264PPSSeen {
 			p.readyBeforeHandoff.Store(true)
 		}
+		return
+	default:
+		return
+	}
+	source.params |= param
+	if afterHandoff {
+		source.after |= param
+		p.psAfterHandoff.Add(1)
 	}
 }
 
@@ -167,6 +220,9 @@ func (p *h264RTPParser) eachNALU(packet *rtp.Packet, fn func(byte)) bool {
 	p.fragmented = false
 	switch {
 	case typ >= 1 && typ <= 23:
+		if len(packet.Payload) < 2 {
+			return false
+		}
 		fn(typ)
 		return complete
 	case typ == 24: // STAP-A
@@ -229,7 +285,7 @@ func eachSTAPA(payload []byte, fn func(byte)) bool {
 			return false
 		}
 		size := int(rest[0])<<8 | int(rest[1])
-		if size == 0 || size > len(rest)-2 {
+		if size < 2 || size > len(rest)-2 {
 			return false
 		}
 		typ := rest[2] & 0x1F

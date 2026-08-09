@@ -2,7 +2,6 @@ package nest
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -17,10 +16,7 @@ import (
 )
 
 func TestH264ProbePassesRTPUnchanged(t *testing.T) {
-	media := &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly}
-	codec := &core.Codec{Name: core.CodecH264, ClockRate: 90000, PayloadType: 96}
-	source := core.NewReceiver(media, codec)
-	probe := newH264Probe(media, codec, source)
+	probe, source := newTestH264Probe()
 	probe.beginHandoff()
 
 	want := testRTP(7, 90, 0x65, 1, 2)
@@ -37,65 +33,52 @@ func TestH264ProbePassesRTPUnchanged(t *testing.T) {
 }
 
 func TestH264ProbeReadinessRequiresPostHandoffSequence(t *testing.T) {
-	media := &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly}
-	codec := &core.Codec{Name: core.CodecH264}
-	probe := newH264Probe(media, codec, core.NewReceiver(media, codec))
+	probe, _ := newTestH264Probe()
 
-	probe.inspect(testRTP(1, 90, 0x67, 1))
-	probe.inspect(testRTP(2, 90, 0x68, 1))
-	probe.inspect(testRTP(3, 90, 0x65, 1))
+	probe.track.Input(testRTP(1, 90, 0x67, 1))
+	probe.track.Input(testRTP(2, 90, 0x68, 1))
+	probe.track.Input(testRTP(3, 90, 0x65, 1))
 	if !probe.readyBeforeHandoff.Load() {
 		t.Fatal("pre-handoff SPS/PPS/IDR was not recorded")
 	}
 
+	probe.track.Input(testRTP(4, 180, 28, 0x80|h264.NALUTypeSPS, 1))
 	probe.beginHandoff()
-	probe.inspect(testRTP(4, 180, 0x65, 1))
-	if probe.readyAfterHandoff.Load() != 0 {
-		t.Fatal("pre-handoff parameter sets satisfied post-handoff readiness")
+	probe.track.Input(testRTP(5, 180, 28, 0x40|h264.NALUTypeSPS, 1))
+	probe.track.Input(testRTP(6, 180, 0x68, 1))
+	probe.track.Input(testRTP(7, 180, 0x65, 1))
+	if probe.readyAfterHandoff.Load() != 0 || probe.readyIDRs.Load() != 0 {
+		t.Fatal("pre-handoff fragment satisfied post-handoff readiness")
 	}
-	probe.inspect(testRTP(5, 180, 0x67, 1))
-	probe.inspect(testRTP(6, 180, 0x68, 1))
-	probe.inspect(testRTP(7, 180, 0x65, 1))
-	if probe.readyAfterHandoff.Load() == 0 {
+	probe.track.Input(testRTP(8, 180, 0x67, 1))
+	probe.track.Input(testRTP(9, 180, 0x68, 1))
+	probe.track.Input(testRTP(10, 180, 0x65, 1))
+	if probe.readyAfterHandoff.Load() == 0 || probe.readyIDRs.Load() != 1 {
 		t.Fatal("post-handoff SPS/PPS/IDR was not recorded")
 	}
 }
 
-func TestH264ProbeReceiverHandoff(t *testing.T) {
-	media := &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly}
-	codec := &core.Codec{Name: core.CodecH264}
-	oldSource := core.NewReceiver(media, codec)
-	newSource := core.NewReceiver(media, codec)
-	oldProbe := newH264Probe(media, codec, oldSource)
-	newProbe := newH264Probe(media, codec, newSource)
+func TestH264ProbeRejectsHeaderOnlyReadiness(t *testing.T) {
+	probe, _ := newTestH264Probe()
+	probe.beginHandoff()
 
-	var got *rtp.Packet
-	oldProbe.track.AppendChild(&core.Node{Input: func(packet *rtp.Packet) { got = packet }})
-	oldProbe.track.Replace(newProbe.track)
-	want := testRTP(1, 90, 0x65, 1)
-	newSource.WriteRTP(want)
-	if got != want {
-		t.Fatal("replacement receiver did not inherit the existing consumer")
+	probe.track.Input(testRTP(1, 90, 0x67))
+	probe.track.Input(testRTP(2, 90, 0x68))
+	probe.track.Input(testRTP(3, 90, 0x65))
+	probe.track.Input(testRTP(4, 90, 24, 0, 1, 0x67, 0, 1, 0x68, 0, 1, 0x65))
+	if probe.readyAfterHandoff.Load() != 0 || probe.readyIDRs.Load() != 0 {
+		t.Fatal("header-only NALUs satisfied decoder readiness")
+	}
+	if probe.malformed.Load() != 4 || probe.sps.Load() != 0 || probe.pps.Load() != 0 || probe.idrs.Load() != 0 {
+		t.Fatal("header-only NALUs were not rejected atomically")
 	}
 }
 
 func TestWebRTCClientProbeTrackAndPLI(t *testing.T) {
-	media := &core.Media{
-		Kind: core.KindVideo, Direction: core.DirectionRecvonly,
-		Codecs: []*core.Codec{{Name: core.CodecH264, ClockRate: 90000, PayloadType: 96}},
-	}
-	conn := &go2rtcwebrtc.Conn{
-		Connection: core.Connection{Medias: []*core.Media{media}},
-		Mode:       core.ModeActiveProducer,
-	}
-	client := &WebRTCClient{
-		conn: conn, done: make(chan struct{}),
-		pliDelays: []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond},
-	}
-	var calls atomic.Int32
+	client, media := newTestWebRTCClient()
+	client.pliDelays = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
 	requested := make(chan struct{}, 3)
 	client.requestPLI = func(*core.Media) error {
-		calls.Add(1)
 		requested <- struct{}{}
 		return nil
 	}
@@ -115,25 +98,22 @@ func TestWebRTCClientProbeTrackAndPLI(t *testing.T) {
 			t.Fatal("timed out waiting for PLI sequence")
 		}
 	}
-	if probe.plis.Load() != 3 || calls.Load() != 3 || !probe.handoffStarted.Load() {
-		t.Fatalf("wrong handoff state: plis=%d calls=%d started=%t", probe.plis.Load(), calls.Load(), probe.handoffStarted.Load())
+	if !probe.handoffStarted.Load() {
+		t.Fatal("probe handoff did not start")
+	}
+	data, err := client.MarshalJSON()
+	if err != nil || !bytes.Contains(data, []byte(`"nest":`)) {
+		t.Fatalf("probe diagnostics missing from connection JSON: %v", err)
 	}
 	close(client.done)
 }
 
 func TestWebRTCClientPreparesNegotiatedH264Profiles(t *testing.T) {
-	media := &core.Media{
-		Kind: core.KindVideo, Direction: core.DirectionRecvonly,
-		Codecs: []*core.Codec{
-			{Name: core.CodecH264, ClockRate: 90000, FmtpLine: "profile-level-id=42e01f", PayloadType: 96},
-			{Name: core.CodecH264, ClockRate: 90000, FmtpLine: "profile-level-id=64001f", PayloadType: 98},
-		},
-	}
-	conn := &go2rtcwebrtc.Conn{
-		Connection: core.Connection{Medias: []*core.Media{media}},
-		Mode:       core.ModeActiveProducer,
-	}
-	client := &WebRTCClient{conn: conn, done: make(chan struct{})}
+	client, media := newTestWebRTCClient(
+		&core.Codec{Name: core.CodecH264, ClockRate: 90000, FmtpLine: "profile-level-id=42e01f", PayloadType: 96},
+		&core.Codec{Name: core.CodecH264, ClockRate: 90000, FmtpLine: "profile-level-id=64001f", PayloadType: 98},
+	)
+	conn := client.conn
 	if err := client.prepareH264Probe(); err != nil {
 		t.Fatal(err)
 	}
@@ -166,13 +146,76 @@ func TestWebRTCClientPreparesNegotiatedH264Profiles(t *testing.T) {
 	}
 }
 
-func TestWebRTCClientMatchesWildcardProbe(t *testing.T) {
-	media := &core.Media{
-		Kind: core.KindVideo, Direction: core.DirectionRecvonly,
-		Codecs: []*core.Codec{{Name: core.CodecH264, ClockRate: 90000, PayloadType: 96}},
+func TestH264ProbeKeepsSourcesAndStreamsIsolated(t *testing.T) {
+	media := &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly}
+	codec := &core.Codec{Name: core.CodecH264}
+	first := core.NewReceiver(media, codec)
+	second := core.NewReceiver(media, codec)
+	probe := newH264Probe(media, codec, first)
+	probe.addSource(second)
+	probe.beginHandoff()
+
+	var forwarded atomic.Int32
+	probe.track.AppendChild(&core.Node{Input: func(*rtp.Packet) { forwarded.Add(1) }})
+	write := func(source *core.Receiver, pt uint8, sequence uint16, payload ...byte) {
+		packet := testRTP(sequence, 90, payload...)
+		packet.PayloadType = pt
+		source.WriteRTP(packet)
 	}
-	conn := &go2rtcwebrtc.Conn{Connection: core.Connection{Medias: []*core.Media{media}}, Mode: core.ModeActiveProducer}
-	client := &WebRTCClient{conn: conn, done: make(chan struct{}), pliDelays: []time.Duration{time.Hour}}
+
+	write(first, 96, 1, 0x67, 1)
+	write(second, 98, 1, 0x68, 1)
+	write(second, 98, 2, 0x65, 1)
+	if probe.readyIDRs.Load() != 0 || forwarded.Load() != 1 {
+		t.Fatal("competing source contributed to probe state or output")
+	}
+
+	write(first, 98, 2, 0x68, 1)
+	write(first, 98, 3, 0x65, 1)
+	if probe.readyIDRs.Load() != 0 {
+		t.Fatal("payload change retained prior parameter sets")
+	}
+	write(first, 98, 4, 0x67, 1)
+	write(first, 98, 5, 0x68, 1)
+	write(first, 98, 6, 0x65, 1)
+	if probe.readyIDRs.Load() != 1 {
+		t.Fatal("active source did not become decoder-ready")
+	}
+	before := forwarded.Load()
+	otherSSRC := testRTP(7, 90, 0x67, 1)
+	otherSSRC.PayloadType = 98
+	otherSSRC.SSRC = 1
+	first.WriteRTP(otherSSRC)
+	if forwarded.Load() != before {
+		t.Fatal("competing SSRC reached probe output")
+	}
+
+	var wg sync.WaitGroup
+	for _, source := range []*core.Receiver{first, second} {
+		wg.Add(1)
+		go func(source *core.Receiver) {
+			defer wg.Done()
+			for i := uint16(0); i < 100; i++ {
+				write(source, 98, 100+i, 0x61, 1)
+			}
+		}(source)
+	}
+	wg.Wait()
+	if forwarded.Load()-before != 100 {
+		t.Fatal("competing source reached probe output")
+	}
+	before = forwarded.Load()
+	malformed := probe.malformed.Load()
+	probe.close()
+	write(first, 98, 200, 0x61, 1)
+	if forwarded.Load() != before || probe.malformed.Load() != malformed {
+		t.Fatal("closed probe forwarded or misclassified a valid packet")
+	}
+}
+
+func TestWebRTCClientMatchesWildcardProbe(t *testing.T) {
+	client, media := newTestWebRTCClient()
+	client.pliDelays = []time.Duration{time.Hour}
 	if err := client.prepareH264Probe(); err != nil {
 		t.Fatal(err)
 	}
@@ -193,8 +236,7 @@ func TestWebRTCClientMatchesWildcardProbe(t *testing.T) {
 }
 
 func TestWebRTCClientContinuesAfterPLIError(t *testing.T) {
-	media := &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly}
-	probe := newH264Probe(media, &core.Codec{Name: core.CodecH264}, core.NewReceiver(media, &core.Codec{Name: core.CodecH264}))
+	probe, _ := newTestH264Probe()
 	var calls int
 	client := &WebRTCClient{done: make(chan struct{}), requestPLI: func(*core.Media) error {
 		calls++
@@ -230,9 +272,44 @@ func TestVideoWatchdogThresholds(t *testing.T) {
 	}
 }
 
+func TestVideoWatchdogRequiresDecoderReadyIDR(t *testing.T) {
+	probe, _ := newTestH264Probe()
+	start := time.Unix(1, 0)
+	lastIDR := start
+	var readyIDRs uint64
+	var lastPLI time.Time
+	want := map[time.Duration]videoWatchdogAction{
+		15 * time.Second: videoWatchdogPLI, 30 * time.Second: videoWatchdogPLI,
+		45 * time.Second: videoWatchdogPLI, 60 * time.Second: videoWatchdogRestartAction,
+	}
+
+	for elapsed := videoWatchdogTick; elapsed <= videoWatchdogRestart; elapsed += videoWatchdogTick {
+		now := start.Add(elapsed)
+		probe.idrs.Add(1)
+		readyIDRs, lastIDR = videoWatchdogProgress(probe, readyIDRs, lastIDR, now)
+		sincePLI := time.Duration(0)
+		if !lastPLI.IsZero() {
+			sincePLI = now.Sub(lastPLI)
+		}
+		action := videoWatchdogDecision(now.Sub(lastIDR), sincePLI)
+		if action != want[elapsed] {
+			t.Fatalf("wrong watchdog action at %s: want=%d got=%d", elapsed, want[elapsed], action)
+		}
+		if action == videoWatchdogPLI {
+			lastPLI = now
+		}
+	}
+
+	now := start.Add(videoWatchdogRestart + videoWatchdogTick)
+	probe.readyIDRs.Add(1)
+	_, lastIDR = videoWatchdogProgress(probe, readyIDRs, lastIDR, now)
+	if lastIDR != now {
+		t.Fatal("decoder-ready IDR did not reset watchdog liveness")
+	}
+}
+
 func TestVideoWatchdogActions(t *testing.T) {
-	media := &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly}
-	probe := newH264Probe(media, &core.Codec{Name: core.CodecH264}, core.NewReceiver(media, &core.Codec{Name: core.CodecH264}))
+	probe, _ := newTestH264Probe()
 	calls := 0
 	client := &WebRTCClient{requestPLI: func(*core.Media) error { calls++; return nil }}
 	if client.checkVideoWatchdog(probe, videoWatchdogPLIAfter, 0) {
@@ -249,26 +326,6 @@ func TestVideoWatchdogActions(t *testing.T) {
 	}
 	if !client.checkVideoWatchdog(probe, videoWatchdogRestart, 0) || probe.watchdogRestarts.Load() != 1 {
 		t.Fatal("restart action was not recorded")
-	}
-}
-
-func TestWebRTCClientMarshalIncludesProbeDiagnostics(t *testing.T) {
-	media := &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly}
-	codec := &core.Codec{Name: core.CodecH264}
-	conn := &go2rtcwebrtc.Conn{Connection: core.Connection{Medias: []*core.Media{media}}, Mode: core.ModeActiveProducer}
-	client := &WebRTCClient{conn: conn, done: make(chan struct{})}
-	client.h264.Store(newH264Probe(media, codec, core.NewReceiver(media, codec)))
-
-	data, err := client.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := fields["nest"]; !ok {
-		t.Fatal("probe diagnostics missing from connection JSON")
 	}
 }
 
@@ -364,7 +421,7 @@ func TestH264RTPParserAllowsEmptyFragments(t *testing.T) {
 }
 
 func TestH264RTPParserSTAPAIsAtomic(t *testing.T) {
-	valid := testRTP(1, 90, 24, 0, 1, 0x67, 0, 1, 0x68, 0, 1, 0x65)
+	valid := testRTP(1, 90, 24, 0, 2, 0x67, 1, 0, 2, 0x68, 1, 0, 2, 0x65, 1)
 	var parser h264RTPParser
 	var types []byte
 	if !parser.eachNALU(valid, func(typ byte) { types = append(types, typ) }) {
@@ -396,15 +453,29 @@ func FuzzH264RTPParser(f *testing.F) {
 	})
 }
 
-func BenchmarkH264ProbeInspect(b *testing.B) {
-	media := &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly}
-	codec := &core.Codec{Name: core.CodecH264}
-	probe := newH264Probe(media, codec, core.NewReceiver(media, codec))
+func BenchmarkH264ProbeInput(b *testing.B) {
+	_, source := newTestH264Probe()
 	packet := testRTP(1, 90, 0x65, 1)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		probe.inspect(packet)
+		source.WriteRTP(packet)
 	}
+}
+
+func newTestH264Probe() (*h264Probe, *core.Receiver) {
+	media := &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly}
+	codec := &core.Codec{Name: core.CodecH264, ClockRate: 90000, PayloadType: 96}
+	source := core.NewReceiver(media, codec)
+	return newH264Probe(media, codec, source), source
+}
+
+func newTestWebRTCClient(codecs ...*core.Codec) (*WebRTCClient, *core.Media) {
+	if len(codecs) == 0 {
+		codecs = []*core.Codec{{Name: core.CodecH264, ClockRate: 90000, PayloadType: 96}}
+	}
+	media := &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly, Codecs: codecs}
+	conn := &go2rtcwebrtc.Conn{Connection: core.Connection{Medias: []*core.Media{media}}, Mode: core.ModeActiveProducer}
+	return &WebRTCClient{conn: conn, done: make(chan struct{})}, media
 }
 
 func testRTP(sequence uint16, timestamp uint32, payload ...byte) *rtp.Packet {

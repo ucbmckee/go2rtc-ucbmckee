@@ -122,7 +122,7 @@ func (c *WebRTCClient) monitorVideo() {
 	defer ticker.Stop()
 
 	var probe *h264Probe
-	var idrs uint64
+	var readyIDRs uint64
 	var lastIDR, lastPLI time.Time
 	for {
 		select {
@@ -135,16 +135,13 @@ func (c *WebRTCClient) monitorVideo() {
 			}
 			if current != probe {
 				probe = current
-				idrs = current.idrs.Load()
+				readyIDRs = current.readyIDRs.Load()
 				lastIDR = now
 				lastPLI = time.Time{}
 				continue
 			}
 
-			if current.idrs.Load() != idrs {
-				idrs = current.idrs.Load()
-				lastIDR = now
-			}
+			readyIDRs, lastIDR = videoWatchdogProgress(current, readyIDRs, lastIDR, now)
 			idle := now.Sub(lastIDR)
 			sincePLI := time.Duration(0)
 			if !lastPLI.IsZero() {
@@ -159,6 +156,14 @@ func (c *WebRTCClient) monitorVideo() {
 			}
 		}
 	}
+}
+
+func videoWatchdogProgress(probe *h264Probe, previous uint64, lastIDR, now time.Time) (uint64, time.Time) {
+	current := probe.readyIDRs.Load()
+	if current != previous {
+		return current, now
+	}
+	return previous, lastIDR
 }
 
 func (c *WebRTCClient) checkVideoWatchdog(probe *h264Probe, idle, sincePLI time.Duration) bool {
@@ -181,6 +186,9 @@ func (c *WebRTCClient) Stop() error {
 	c.stopOnce.Do(func() {
 		close(c.done)
 		c.api.StopExtendStreamTimer()
+		if probe := c.h264.Load(); probe != nil {
+			probe.close()
+		}
 		c.stopErr = c.conn.Stop()
 		_ = c.api.StopWebRTCStream()
 	})
