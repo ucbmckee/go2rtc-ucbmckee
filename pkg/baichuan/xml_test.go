@@ -1,6 +1,21 @@
 package baichuan
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestParseNonceLimits(t *testing.T) {
+	for _, body := range [][]byte{
+		[]byte(strings.Repeat(" ", maxNonceBody+1)),
+		[]byte(`<body><Encryption><nonce>` + strings.Repeat("n", maxNonceSize+1) +
+			`</nonce></Encryption></body>`),
+	} {
+		if _, err := parseNonce(body); err == nil {
+			t.Fatal("accepted oversized login nonce")
+		}
+	}
+}
 
 func FuzzXMLParsers(f *testing.F) {
 	f.Add([]byte(`<body><Encryption><nonce>nonce</nonce></Encryption></body>`))

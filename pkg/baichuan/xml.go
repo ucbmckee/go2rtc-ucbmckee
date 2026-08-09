@@ -5,6 +5,11 @@ import (
 	"fmt"
 )
 
+const (
+	maxNonceBody = 4 << 10
+	maxNonceSize = 128
+)
+
 type loginEnvelope struct {
 	XMLName xml.Name  `xml:"body"`
 	User    loginUser `xml:"LoginUser"`
@@ -78,12 +83,18 @@ func buildLogin(username, password, nonce string) ([]byte, error) {
 }
 
 func parseNonce(body []byte) (string, error) {
+	if len(body) > maxNonceBody {
+		return "", fmt.Errorf("login nonce XML exceeds %d bytes", maxNonceBody)
+	}
 	var value nonceEnvelope
 	if err := xml.Unmarshal(body, &value); err != nil {
 		return "", fmt.Errorf("decode nonce XML: %w", err)
 	}
 	if value.Encryption == nil || value.Encryption.Nonce == "" {
 		return "", fmt.Errorf("nonce missing from login response")
+	}
+	if len(value.Encryption.Nonce) > maxNonceSize {
+		return "", fmt.Errorf("login nonce exceeds %d bytes", maxNonceSize)
 	}
 	return value.Encryption.Nonce, nil
 }

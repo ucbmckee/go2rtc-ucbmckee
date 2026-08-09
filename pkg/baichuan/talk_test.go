@@ -152,6 +152,20 @@ func TestSelectTalkConfigSkipsInvalidADPCMProfile(t *testing.T) {
 	}
 }
 
+func TestDecodeTalkAbilityLimits(t *testing.T) {
+	for _, body := range [][]byte{
+		[]byte(strings.Repeat(" ", maxTalkAbilityBody+1)),
+		[]byte(`<body><TalkAbility>` + strings.Repeat(`<duplexList><duplex>fullDuplex</duplex></duplexList>`,
+			maxTalkAbilityOptions+1) + `</TalkAbility></body>`),
+		[]byte(`<body><TalkAbility version="` + strings.Repeat("v", maxTalkAbilityText+1) +
+			`"></TalkAbility></body>`),
+	} {
+		if _, err := decodeTalkAbility(body); err == nil {
+			t.Fatal("accepted oversized talk ability")
+		}
+	}
+}
+
 func TestSelectTalkConfigRejectsIncompleteAbility(t *testing.T) {
 	valid := talkAudioConfig{
 		AudioType: "adpcm", SampleRate: 16000, SamplePrecision: 16,

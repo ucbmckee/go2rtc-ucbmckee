@@ -6,13 +6,15 @@ import (
 )
 
 func (p *Profile) watchTracks(ctx context.Context, cancel context.CancelFunc, stalled chan<- error) {
-	if p.video == nil && p.audio == nil || p.trackCheckInterval <= 0 || p.trackStallTimeout <= 0 {
+	if p.trackCheckInterval <= 0 || p.trackStallTimeout <= 0 {
 		return
 	}
+	rawOnly := p.video == nil && p.audio == nil
 	ticker := time.NewTicker(p.trackCheckInterval)
 	defer ticker.Stop()
 	video, audio := p.videoFrames.Load(), p.audioSamples.Load()
 	videoAt, audioAt := time.Now(), time.Now()
+	received, receivedAt := p.recvBytes.Load(), time.Now()
 	rateSamples, rateAt := p.audioSamples.Load(), time.Now()
 	for {
 		select {
@@ -25,8 +27,15 @@ func (p *Profile) watchTracks(ctx context.Context, cancel context.CancelFunc, st
 			if samples := p.audioSamples.Load(); samples != audio {
 				audio, audioAt = samples, now
 			}
+			if rawOnly {
+				if bytes := p.recvBytes.Load(); bytes != received {
+					received, receivedAt = bytes, now
+				}
+			}
 			var err error
-			if p.video != nil && now.Sub(videoAt) >= p.trackStallTimeout {
+			if rawOnly && now.Sub(receivedAt) >= p.trackStallTimeout {
+				err = mediaErrorf("reolink: media stream stalled")
+			} else if p.video != nil && now.Sub(videoAt) >= p.trackStallTimeout {
 				err = mediaErrorf("reolink: video track stalled")
 			} else if p.audio != nil && now.Sub(audioAt) >= p.trackStallTimeout {
 				err = mediaErrorf("reolink: audio track stalled")

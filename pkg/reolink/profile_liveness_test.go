@@ -93,6 +93,31 @@ func TestProfileDoesNotMonitorUnadvertisedAudio(t *testing.T) {
 	<-done
 }
 
+func TestBackchannelOnlyProfileStallsWithoutMedia(t *testing.T) {
+	format := baichuan.TalkFormat{SampleRate: 16000, SamplesPerBlock: 1016}
+	opener := &fakeProfileOpener{talk: &format}
+	registry := testRegistry(opener.open, sessionBudget{main: 2, other: 10})
+	producer, err := registry.Dial("reolink://admin:secret@camera/sub?video=0&audio=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	producer.profile.trackCheckInterval = testTrackCheckInterval
+	producer.profile.trackStallTimeout = testTrackStallTimeout
+	done := make(chan error, 1)
+	go func() { done <- producer.Start() }()
+	select {
+	case err = <-done:
+		if err == nil || !strings.Contains(err.Error(), "media stream stalled") {
+			t.Fatalf("unexpected terminal error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("backchannel-only media stall did not stop producer")
+	}
+	if err = producer.Stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProfileReconnectsAfterLowAudioRate(t *testing.T) {
 	opener := &fakeProfileOpener{}
 	registry := testRegistry(opener.open, sessionBudget{main: 1, other: 10})

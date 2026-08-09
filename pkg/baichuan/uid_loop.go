@@ -118,6 +118,10 @@ func (s *uidConn) handleUIDData(packet uidPacket, b *uidBuffer) bool {
 		*slot = uidReceiveSlot{}
 		s.nextReceive++
 		s.received = true
+		if len(chunk.data) == 0 {
+			s.putBuffer(chunk.buffer)
+			continue
+		}
 		select {
 		case s.readQueue <- chunk:
 		case <-s.done:

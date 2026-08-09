@@ -22,12 +22,12 @@ func TestBC(t *testing.T) {
 	}
 }
 
-func TestAESRoundTrip(t *testing.T) {
+func TestAESKnownVector(t *testing.T) {
 	state := cipherState{mode: encryptionAES}
 	state.setAESKey(deriveAESKey("nonce", "password"))
 	encoded := testCrypt(state, 0, []byte("camera XML"), true)
-	if string(encoded) == "camera XML" {
-		t.Fatal("AES did not change plaintext")
+	if actual := hex.EncodeToString(encoded); actual != "db73b881b9082f4c67b5" {
+		t.Fatalf("unexpected ciphertext: %s", actual)
 	}
 	if actual := string(testCrypt(state, 0, encoded, false)); actual != "camera XML" {
 		t.Fatalf("unexpected plaintext: %s", actual)

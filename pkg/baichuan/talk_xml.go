@@ -2,7 +2,14 @@ package baichuan
 
 import (
 	"encoding/xml"
+	"fmt"
 	"strings"
+)
+
+const (
+	maxTalkAbilityBody    = 64 << 10
+	maxTalkAbilityOptions = 32
+	maxTalkAbilityText    = 64
 )
 
 type talkAudioConfig struct {
@@ -57,12 +64,35 @@ type talkExtension struct {
 }
 
 func decodeTalkAbility(b []byte) (*talkAbility, error) {
+	if len(b) > maxTalkAbilityBody {
+		return nil, fmt.Errorf("talk ability XML exceeds %d bytes", maxTalkAbilityBody)
+	}
 	var envelope talkAbilityEnvelope
 	if err := xml.Unmarshal(b, &envelope); err != nil {
 		return nil, err
 	}
 	if envelope.Ability == nil {
 		return nil, &UnsupportedTalkError{Reason: "ability missing"}
+	}
+	ability := envelope.Ability
+	if len(ability.Duplexes) > maxTalkAbilityOptions || len(ability.Modes) > maxTalkAbilityOptions ||
+		len(ability.Configs) > maxTalkAbilityOptions || len(ability.Version) > maxTalkAbilityText {
+		return nil, fmt.Errorf("talk ability exceeds semantic limits")
+	}
+	for _, option := range ability.Duplexes {
+		if len(option.Value) > maxTalkAbilityText {
+			return nil, fmt.Errorf("talk ability exceeds semantic limits")
+		}
+	}
+	for _, option := range ability.Modes {
+		if len(option.Value) > maxTalkAbilityText {
+			return nil, fmt.Errorf("talk ability exceeds semantic limits")
+		}
+	}
+	for _, option := range ability.Configs {
+		if len(option.Value.AudioType) > maxTalkAbilityText || len(option.Value.SoundTrack) > maxTalkAbilityText {
+			return nil, fmt.Errorf("talk ability exceeds semantic limits")
+		}
 	}
 	return envelope.Ability, nil
 }

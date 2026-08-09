@@ -44,6 +44,20 @@ func TestUIDConnDoesNotRedeliverDuplicateData(t *testing.T) {
 	}
 }
 
+func TestUIDConnConsumesEmptyData(t *testing.T) {
+	conn, _ := newTestUIDConn(t, time.Second)
+	b := conn.getBuffer()
+	if !conn.handleUIDData(uidPacket{packetID: 0, payload: b[:0]}, b) {
+		t.Fatal("empty packet buffer was not consumed")
+	}
+	conn.receiveMu.Lock()
+	next := conn.nextReceive
+	conn.receiveMu.Unlock()
+	if next != 1 || len(conn.readQueue) != 0 {
+		t.Fatalf("empty packet reached reader: next=%d queued=%d", next, len(conn.readQueue))
+	}
+}
+
 func TestUIDConnDeadlinesAndClose(t *testing.T) {
 	conn, _ := newTestUIDConn(t, time.Second)
 	if err := conn.SetReadDeadline(time.Now().Add(20 * time.Millisecond)); err != nil {
