@@ -38,6 +38,7 @@ type API struct {
 	extendFinished chan struct{}
 	extendCancel   context.CancelFunc
 	extendRequest  func(context.Context) error
+	renewBefore    time.Duration
 }
 
 type authState struct {
@@ -59,7 +60,11 @@ type DeviceInfo struct {
 	Protocols []string
 }
 
-const apiRequestTimeout = 10 * time.Second
+const (
+	apiRequestTimeout        = 10 * time.Second
+	defaultStreamRenewBefore = 30 * time.Second
+	streamSessionLifetime    = 5 * time.Minute
+)
 
 type authKey struct {
 	clientID     string
@@ -583,6 +588,10 @@ func (a *API) StartExtendStreamTimer() {
 	a.streamMu.RLock()
 	expiresAt := a.StreamExpiresAt
 	a.streamMu.RUnlock()
+	renewBefore := a.renewBefore
+	if renewBefore == 0 {
+		renewBefore = defaultStreamRenewBefore
+	}
 
 	a.extendMu.Lock()
 	if a.extendTimer != nil {
@@ -590,7 +599,7 @@ func (a *API) StartExtendStreamTimer() {
 		return
 	}
 
-	timer := time.NewTimer(time.Until(expiresAt) - time.Minute)
+	timer := time.NewTimer(time.Until(expiresAt) - renewBefore)
 	done := make(chan struct{})
 	finished := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -602,20 +611,44 @@ func (a *API) StartExtendStreamTimer() {
 
 	go func() {
 		defer close(finished)
-		select {
-		case <-timer.C:
+	loop:
+		for {
 			select {
+			case <-timer.C:
+				select {
+				case <-done:
+					break loop
+				default:
+				}
 			case <-done:
-				return
-			default:
+				break loop
 			}
+
+			var err error
 			if a.extendRequest != nil {
-				_ = a.extendRequest(ctx)
+				err = a.extendRequest(ctx)
 			} else {
-				_ = a.extendStream(ctx)
+				err = a.extendStream(ctx)
 			}
-		case <-done:
-			return
+			if err != nil {
+				break
+			}
+
+			a.streamMu.RLock()
+			nextExpiresAt := a.StreamExpiresAt
+			a.streamMu.RUnlock()
+			if !nextExpiresAt.After(expiresAt) {
+				break
+			}
+			expiresAt = nextExpiresAt
+
+			a.extendMu.Lock()
+			if a.extendTimer != timer {
+				a.extendMu.Unlock()
+				break
+			}
+			timer.Reset(time.Until(expiresAt) - renewBefore)
+			a.extendMu.Unlock()
 		}
 
 		a.extendMu.Lock()

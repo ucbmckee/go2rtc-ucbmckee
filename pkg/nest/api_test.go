@@ -79,6 +79,36 @@ func TestExtendStreamTimerConcurrentStop(t *testing.T) {
 	api.StopExtendStreamTimer()
 }
 
+func TestExtendStreamTimerRepeats(t *testing.T) {
+	api := &API{StreamExpiresAt: time.Now().Add(-time.Minute)}
+	calls := 0
+	api.extendRequest = func(context.Context) error {
+		calls++
+		if calls == 1 {
+			api.streamMu.Lock()
+			api.StreamExpiresAt = time.Now().Add(-time.Second)
+			api.streamMu.Unlock()
+		}
+		return nil
+	}
+	api.StartExtendStreamTimer()
+	t.Cleanup(api.StopExtendStreamTimer)
+
+	api.extendMu.Lock()
+	finished := api.extendFinished
+	api.extendMu.Unlock()
+	if finished != nil {
+		select {
+		case <-finished:
+		case <-time.After(time.Second):
+			t.Fatal("stream extension didn't stop on unchanged expiry")
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("wrong stream extension count: %d", calls)
+	}
+}
+
 func TestExtendStreamTimerJoinsCanceledRequest(t *testing.T) {
 	started := make(chan struct{})
 	api := &API{

@@ -75,11 +75,16 @@ func Dial(rawURL string) (core.Producer, error) {
 	if clientID == "" || clientSecret == "" || refreshToken == "" || projectID == "" || deviceID == "" {
 		return nil, errors.New("nest: wrong query")
 	}
+	renewBefore, err := parseRenewBefore(query.Get("renew_before"))
+	if err != nil {
+		return nil, err
+	}
 
 	nestAPI, err := NewAPI(clientID, clientSecret, refreshToken)
 	if err != nil {
 		return nil, err
 	}
+	nestAPI.renewBefore = renewBefore
 
 	protocols := strings.Split(query.Get("protocols"), ",")
 	if len(protocols) > 0 && protocols[0] == "RTSP" {
@@ -88,6 +93,17 @@ func Dial(rawURL string) (core.Producer, error) {
 
 	// Default to WEB_RTC for backwards compatibility.
 	return rtcConn(nestAPI, rawURL, projectID, deviceID)
+}
+
+func parseRenewBefore(value string) (time.Duration, error) {
+	if value == "" {
+		return defaultStreamRenewBefore, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 || duration >= streamSessionLifetime {
+		return 0, errors.New("nest: invalid renew_before")
+	}
+	return duration, nil
 }
 
 func (c *WebRTCClient) GetMedias() []*core.Media {
