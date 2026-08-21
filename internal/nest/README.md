@@ -9,11 +9,3 @@ But if you can somehow get the below parameters, Nest/WebRTC source will work wi
 streams:
   nest-doorbell: nest:?client_id=***&client_secret=***&refresh_token=***&project_id=***&device_id=***
 ```
-
-The stream renews 30 seconds before Google's `expiresAt` time. Set `renew_before`,
-using a duration greater than 0 and less than 5 minutes, to renew earlier or later:
-
-```yaml
-streams:
-  nest-doorbell: nest:?client_id=***&client_secret=***&refresh_token=***&project_id=***&device_id=***&renew_before=45s
-```

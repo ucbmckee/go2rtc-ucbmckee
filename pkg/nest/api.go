@@ -38,7 +38,6 @@ type API struct {
 	extendFinished chan struct{}
 	extendCancel   context.CancelFunc
 	extendRequest  func(context.Context) error
-	renewBefore    time.Duration
 }
 
 type authState struct {
@@ -60,11 +59,7 @@ type DeviceInfo struct {
 	Protocols []string
 }
 
-const (
-	apiRequestTimeout        = 10 * time.Second
-	defaultStreamRenewBefore = 30 * time.Second
-	streamSessionLifetime    = 5 * time.Minute
-)
+const apiRequestTimeout = 10 * time.Second
 
 type authKey struct {
 	clientID     string
@@ -588,10 +583,6 @@ func (a *API) StartExtendStreamTimer() {
 	a.streamMu.RLock()
 	expiresAt := a.StreamExpiresAt
 	a.streamMu.RUnlock()
-	renewBefore := a.renewBefore
-	if renewBefore == 0 {
-		renewBefore = defaultStreamRenewBefore
-	}
 
 	a.extendMu.Lock()
 	if a.extendTimer != nil {
@@ -599,7 +590,7 @@ func (a *API) StartExtendStreamTimer() {
 		return
 	}
 
-	timer := time.NewTimer(time.Until(expiresAt) - renewBefore)
+	timer := time.NewTimer(time.Until(expiresAt) - time.Minute)
 	done := make(chan struct{})
 	finished := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -647,7 +638,7 @@ func (a *API) StartExtendStreamTimer() {
 				a.extendMu.Unlock()
 				break
 			}
-			timer.Reset(time.Until(expiresAt) - renewBefore)
+			timer.Reset(time.Until(expiresAt) - time.Minute)
 			a.extendMu.Unlock()
 		}
 

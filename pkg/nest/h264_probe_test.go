@@ -15,20 +15,70 @@ import (
 	pion "github.com/pion/webrtc/v4"
 )
 
-func TestH264ProbePassesRTPUnchanged(t *testing.T) {
+func TestH264ProbeGatesUntilDecoderReadyAndPassesRTPUnchanged(t *testing.T) {
 	probe, source := newTestH264Probe()
 	probe.beginHandoff()
 
-	want := testRTP(7, 90, 0x65, 1, 2)
-	var got *rtp.Packet
-	probe.track.AppendChild(&core.Node{Input: func(packet *rtp.Packet) { got = packet }})
-	source.WriteRTP(want)
-
-	if got != want || !bytes.Equal(got.Payload, want.Payload) {
-		t.Fatal("probe changed RTP packet")
+	var got []*rtp.Packet
+	probe.track.AppendChild(&core.Node{Input: func(packet *rtp.Packet) { got = append(got, packet) }})
+	source.WriteRTP(testRTP(1, 90, 0x61, 1))
+	want := []*rtp.Packet{
+		testRTP(2, 180, 0x67, 1),
+		testRTP(3, 180, 0x68, 1),
+		testRTP(4, 180, 0x65, 1, 2),
+		testRTP(5, 270, 0x61, 1),
+	}
+	for _, packet := range want {
+		source.WriteRTP(packet)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("wrong forwarded packet count: want=%d got=%d", len(want), len(got))
+	}
+	for i := range want {
+		if got[i] != want[i] || !bytes.Equal(got[i].Payload, want[i].Payload) {
+			t.Fatalf("probe changed RTP packet %d", i)
+		}
 	}
 	if probe.idrs.Load() != 1 || probe.idrsAfterHandoff.Load() != 1 {
 		t.Fatalf("wrong IDR counters: %d/%d", probe.idrs.Load(), probe.idrsAfterHandoff.Load())
+	}
+}
+
+func TestH264ProbeGatesFragmentedIDR(t *testing.T) {
+	probe, source := newTestH264Probe()
+	probe.beginHandoff()
+	var got []*rtp.Packet
+	probe.track.AppendChild(&core.Node{Input: func(packet *rtp.Packet) { got = append(got, packet) }})
+
+	for _, packet := range []*rtp.Packet{
+		testRTP(1, 90, 0x67, 1), testRTP(2, 90, 0x68, 1),
+		testRTP(3, 180, 28, 0x80|h264.NALUTypeIFrame, 1),
+		testRTP(4, 180, 28, h264.NALUTypeIFrame, 2),
+		testRTP(5, 180, 28, 0x40|h264.NALUTypeIFrame, 3),
+		testRTP(6, 270, 0x61, 1),
+	} {
+		source.WriteRTP(packet)
+	}
+	if len(got) != 6 || probe.readyIDRs.Load() != 1 {
+		t.Fatalf("fragmented IDR did not open gate: packets=%d ready=%d", len(got), probe.readyIDRs.Load())
+	}
+
+	probe, source = newTestH264Probe()
+	probe.beginHandoff()
+	got = nil
+	probe.track.AppendChild(&core.Node{Input: func(packet *rtp.Packet) { got = append(got, packet) }})
+	source.WriteRTP(testRTP(7, 360, 0x67, 1))
+	source.WriteRTP(testRTP(8, 360, 0x68, 1))
+	source.WriteRTP(testRTP(9, 450, 28, 0x80|h264.NALUTypeIFrame, 1))
+	source.WriteRTP(testRTP(11, 450, 28, 0x40|h264.NALUTypeIFrame, 2))
+	source.WriteRTP(testRTP(12, 540, 0x61, 1))
+	if len(got) != 3 {
+		t.Fatalf("broken IDR did not close gate: packets=%d", len(got))
+	}
+	source.WriteRTP(testRTP(13, 630, 0x65, 1))
+	source.WriteRTP(testRTP(14, 720, 0x61, 1))
+	if len(got) != 5 || probe.readyIDRs.Load() != 1 {
+		t.Fatal("complete replacement IDR did not reopen gate")
 	}
 }
 
@@ -172,8 +222,8 @@ func TestH264ProbeKeepsSourcesAndStreamsIsolated(t *testing.T) {
 
 	write(first, 98, 2, 0x68, 1)
 	write(first, 98, 3, 0x65, 1)
-	if probe.readyIDRs.Load() != 0 {
-		t.Fatal("payload change retained prior parameter sets")
+	if probe.readyIDRs.Load() != 0 || forwarded.Load() != 2 {
+		t.Fatal("payload change retained prior readiness or forwarded its IDR")
 	}
 	write(first, 98, 4, 0x67, 1)
 	write(first, 98, 5, 0x68, 1)
