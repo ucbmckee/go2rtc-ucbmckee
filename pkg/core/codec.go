@@ -158,6 +158,9 @@ func UnmarshalCodec(md *sdp.MediaDescription, payloadType string) *Codec {
 	}
 
 	switch c.Name {
+	case CodecOpus:
+		// Opus RTP always advertises a 48 kHz clock and two channels (RFC 7587 section 7).
+		c.ClockRate, c.Channels = 48000, 2
 	case "PCM":
 		// https://www.reddit.com/r/Hikvision/comments/17elxex/comment/k642g2r/
 		// check pkg/rtsp/rtsp_test.go TestHikvisionPCM
