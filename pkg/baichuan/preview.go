@@ -159,9 +159,10 @@ func (p *Preview) Read(ctx context.Context) (MediaPacket, error) {
 			residue := len(p.parser.buf)
 			packets, err := p.parser.appendOwnedTo(msg.payload, p.packets)
 			if err != nil {
-				err = fmt.Errorf("baichuan: parse media with residue %d, extension %d, encrypted prefix %d (present %t), check position %d (present %t), payload %d, parsed %d, remaining %d: %w",
+				err = fmt.Errorf("baichuan: parse media command %d sequence %d status %d, binaryData %d (present %t), residue %d, extension %d, encrypted prefix %d (present %t), check position %d (present %t), payload %d, parsed %d, remaining %d, %s: %w",
+					msg.header.Command, msg.header.Sequence, msg.header.ResponseCode, msg.binaryFlag, msg.hasBinaryFlag,
 					residue, len(msg.extension), msg.encrypt, msg.hasEncryptLen, msg.checkPos, msg.hasCheckPos,
-					len(msg.payload), len(packets), len(p.parser.buf), err)
+					len(msg.payload), len(packets), len(p.parser.buf), mediaFailureDetail(p.parser.buf, p.parser.limits), err)
 				p.closeLocal(err)
 				return MediaPacket{}, err
 			}

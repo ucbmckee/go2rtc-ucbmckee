@@ -51,6 +51,8 @@ type message struct {
 	extension     []byte
 	payload       []byte
 	binary        bool
+	binaryFlag    int
+	hasBinaryFlag bool
 	encrypt       int
 	hasEncryptLen bool
 	checkPos      int
@@ -168,6 +170,10 @@ func decodeFrame(value frame, cipher cipherState, binaryHint bool) (message, err
 	msg := message{
 		header: value.header, extension: extensionBody, payload: payload,
 		binary: binaryPayload, encrypt: encryptLen, hasEncryptLen: extensionMeta.EncryptLen != nil,
+	}
+	if extensionMeta.BinaryData != nil {
+		msg.binaryFlag = *extensionMeta.BinaryData
+		msg.hasBinaryFlag = true
 	}
 	if extensionMeta.CheckPos != nil {
 		msg.checkPos = *extensionMeta.CheckPos

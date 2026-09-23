@@ -146,7 +146,7 @@ func (p *MediaParser) parseVideo(b []byte, keyframe bool) (MediaPacket, int, boo
 	case codecH265:
 		codec = "H265"
 	default:
-		return MediaPacket{}, 0, false, fmt.Errorf("baichuan: unsupported video codec %q", b[4:8])
+		return MediaPacket{}, 0, false, fmt.Errorf("baichuan: unsupported video codec %#x", binary.LittleEndian.Uint32(b[4:8]))
 	}
 	payload := binary.LittleEndian.Uint32(b[8:12])
 	extra := binary.LittleEndian.Uint32(b[12:16])
