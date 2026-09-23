@@ -234,6 +234,7 @@ func TestWebRTCClientStartWaitsForRemoteCleanup(t *testing.T) {
 	}
 	conn := go2rtcwebrtc.NewConn(pc)
 	client := &WebRTCClient{conn: conn, api: testStreamAPI(), done: make(chan struct{})}
+	client.watchPeer()
 	done := make(chan error, 1)
 	go func() { done <- client.Start() }()
 	if err = conn.Close(); err != nil {

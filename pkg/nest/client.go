@@ -17,16 +17,19 @@ import (
 )
 
 type WebRTCClient struct {
-	conn       *webrtc.Conn
-	pc         *pion.PeerConnection
-	api        *API
-	h264       atomic.Pointer[h264Probe]
-	pliOnce    sync.Once
-	requestPLI func(*core.Media) error
-	pliDelays  []time.Duration
-	done       chan struct{}
-	stopOnce   sync.Once
-	stopErr    error
+	conn        *webrtc.Conn
+	pc          *pion.PeerConnection
+	api         *API
+	h264        atomic.Pointer[h264Probe]
+	pliOnce     sync.Once
+	requestPLI  func(*core.Media) error
+	pliDelays   []time.Duration
+	done        chan struct{}
+	peerDone    chan struct{}
+	sessionMu   sync.Mutex
+	sessionOnce sync.Once
+	stopOnce    sync.Once
+	stopErr     error
 }
 
 const (
@@ -110,17 +113,46 @@ func (c *WebRTCClient) AddTrack(media *core.Media, codec *core.Codec, track *cor
 }
 
 func (c *WebRTCClient) Start() error {
-	c.api.StartExtendStreamTimer()
-	go c.monitorVideo()
-	err := c.conn.Start()
-	_ = c.Stop()
-	return err
+	c.sessionMu.Lock()
+	select {
+	case <-c.done:
+	default:
+		c.api.StartExtendStreamTimer()
+		go c.monitorVideo()
+	}
+	c.sessionMu.Unlock()
+	select {
+	case <-c.peerDone:
+	case <-c.done:
+	}
+	c.stopSession()
+	return nil
+}
+
+func (c *WebRTCClient) watchPeer() {
+	c.peerDone = make(chan struct{}, 1)
+	c.conn.Listen(func(event any) {
+		state, ok := event.(pion.PeerConnectionState)
+		if !ok {
+			return
+		}
+		switch state {
+		case pion.PeerConnectionStateDisconnected, pion.PeerConnectionStateFailed, pion.PeerConnectionStateClosed:
+			select {
+			case c.peerDone <- struct{}{}:
+			default:
+			}
+		}
+	})
 }
 
 func (c *WebRTCClient) monitorVideo() {
 	ticker := time.NewTicker(videoWatchdogTick)
 	defer ticker.Stop()
+	c.monitorVideoTicks(ticker.C)
+}
 
+func (c *WebRTCClient) monitorVideoTicks(ticks <-chan time.Time) {
 	var probe *h264Probe
 	var readyIDRs uint64
 	var lastIDR, lastPLI time.Time
@@ -128,7 +160,7 @@ func (c *WebRTCClient) monitorVideo() {
 		select {
 		case <-c.done:
 			return
-		case now := <-ticker.C:
+		case now := <-ticks:
 			current := c.h264.Load()
 			if current == nil || !current.handoffStarted.Load() {
 				continue
@@ -148,7 +180,7 @@ func (c *WebRTCClient) monitorVideo() {
 				sincePLI = now.Sub(lastPLI)
 			}
 			if c.checkVideoWatchdog(current, idle, sincePLI) {
-				_ = c.Stop()
+				c.stopSession()
 				return
 			}
 			if videoWatchdogDecision(idle, sincePLI) == videoWatchdogPLI {
@@ -182,15 +214,24 @@ func (c *WebRTCClient) checkVideoWatchdog(probe *h264Probe, idle, sincePLI time.
 	return false
 }
 
-func (c *WebRTCClient) Stop() error {
-	c.stopOnce.Do(func() {
+func (c *WebRTCClient) stopSession() {
+	c.sessionOnce.Do(func() {
+		c.sessionMu.Lock()
 		close(c.done)
 		c.api.StopExtendStreamTimer()
+		c.sessionMu.Unlock()
 		if probe := c.h264.Load(); probe != nil {
 			probe.close()
 		}
-		c.stopErr = c.conn.Stop()
+		_ = c.conn.Close()
 		_ = c.api.StopWebRTCStream()
+	})
+}
+
+func (c *WebRTCClient) Stop() error {
+	c.stopOnce.Do(func() {
+		c.stopSession()
+		c.stopErr = c.conn.Stop()
 	})
 	return c.stopErr
 }
@@ -240,6 +281,7 @@ func rtcConn(nestAPI *API, rawURL, projectID, deviceID string) (*WebRTCClient, e
 	conn.Protocol = "http"
 	conn.URL = redactedSource(rawURL)
 	client := &WebRTCClient{conn: conn, pc: pc, api: nestAPI, done: make(chan struct{})}
+	client.watchPeer()
 
 	// https://developers.google.com/nest/device-access/traits/device/camera-live-stream#generatewebrtcstream-request-fields
 	medias := []*core.Media{
