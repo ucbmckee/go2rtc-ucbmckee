@@ -26,6 +26,24 @@ func TestSDP(t *testing.T) {
 	assert.Empty(t, err)
 }
 
+func TestUnmarshalCodecOpus(t *testing.T) {
+	canonical := &Codec{Name: CodecOpus, ClockRate: 48000, Channels: 2, PayloadType: 96}
+
+	for _, rtpmap := range []string{
+		"96 opus/48000",
+		"96 opus/48000/1",
+		"96 opus/16000/1",
+	} {
+		t.Run(rtpmap, func(t *testing.T) {
+			md := &sdp.MediaDescription{Attributes: []sdp.Attribute{{Key: "rtpmap", Value: rtpmap}}}
+			codec := UnmarshalCodec(md, "96")
+
+			require.Equal(t, canonical, codec)
+			require.Same(t, codec, (&Media{Codecs: []*Codec{codec}}).MatchCodec(canonical))
+		})
+	}
+}
+
 func TestParseQuery(t *testing.T) {
 	u, _ := url.Parse("rtsp://localhost:8554/camera1")
 	medias := ParseQuery(u.Query())

@@ -219,7 +219,6 @@ func (p *Producer) reconnect(workerID, retry int) {
 
 				receiver.Replace(track)
 				p.receivers[i] = track
-				break
 			}
 
 		case core.DirectionSendonly:

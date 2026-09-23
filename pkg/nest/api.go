@@ -2,6 +2,7 @@ package nest
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,8 +13,11 @@ import (
 )
 
 type API struct {
+	// Deprecated: requests use the shared auth state; these fields are snapshots
+	// retained for source compatibility with older callers.
 	Token     string
 	ExpiresAt time.Time
+	auth      *authState
 
 	StreamProjectID string
 	StreamDeviceID  string
@@ -25,8 +29,24 @@ type API struct {
 	// RTSP
 	StreamToken          string
 	StreamExtensionToken string
+	streamMu             sync.RWMutex
+	streamGeneration     uint64
 
-	extendTimer *time.Timer
+	extendMu       sync.Mutex
+	extendTimer    *time.Timer
+	extendDone     chan struct{}
+	extendFinished chan struct{}
+	extendCancel   context.CancelFunc
+	extendRequest  func(context.Context) error
+}
+
+type authState struct {
+	mu           sync.Mutex
+	clientID     string
+	clientSecret string
+	refreshToken string
+	token        string
+	expiresAt    time.Time
 }
 
 type Auth struct {
@@ -39,57 +59,88 @@ type DeviceInfo struct {
 	Protocols []string
 }
 
-var cache = map[string]*API{}
+const apiRequestTimeout = 10 * time.Second
+
+type authKey struct {
+	clientID     string
+	clientSecret string
+	refreshToken string
+}
+
+var cache = map[authKey]*authState{}
 var cacheMu sync.Mutex
 
 func NewAPI(clientID, clientSecret, refreshToken string) (*API, error) {
+	key := authKey{clientID: clientID, clientSecret: clientSecret, refreshToken: refreshToken}
 	cacheMu.Lock()
-	defer cacheMu.Unlock()
+	state := cache[key]
+	if state == nil {
+		state = &authState{clientID: clientID, clientSecret: clientSecret, refreshToken: refreshToken}
+		cache[key] = state
+	}
+	cacheMu.Unlock()
 
-	key := clientID + ":" + clientSecret + ":" + refreshToken
-	now := time.Now()
-
-	if api := cache[key]; api != nil && now.Before(api.ExpiresAt) {
-		return api, nil
+	if err := state.ensureToken(); err != nil {
+		return nil, err
 	}
 
+	return newAPI(state), nil
+}
+
+func (s *authState) ensureToken() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.token != "" && time.Now().Before(s.expiresAt) {
+		return nil
+	}
+	return s.refreshLocked()
+}
+
+func (s *authState) refreshLocked() error {
 	data := url.Values{
 		"grant_type":    []string{"refresh_token"},
-		"client_id":     []string{clientID},
-		"client_secret": []string{clientSecret},
-		"refresh_token": []string{refreshToken},
+		"client_id":     []string{s.clientID},
+		"client_secret": []string{s.clientSecret},
+		"refresh_token": []string{s.refreshToken},
 	}
 
-	client := &http.Client{Timeout: time.Second * 5000}
+	client := &http.Client{Timeout: apiRequestTimeout}
 	res, err := client.PostForm("https://www.googleapis.com/oauth2/v4/token", data)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != 200 {
-		return nil, errors.New("nest: wrong status: " + res.Status)
+		return errors.New("nest: wrong status: " + res.Status)
 	}
 
 	var resv struct {
 		AccessToken string        `json:"access_token"`
 		ExpiresIn   time.Duration `json:"expires_in"`
-		Scope       string        `json:"scope"`
-		TokenType   string        `json:"token_type"`
 	}
-
 	if err = json.NewDecoder(res.Body).Decode(&resv); err != nil {
-		return nil, err
+		return err
 	}
 
-	api := &API{
-		Token:     resv.AccessToken,
-		ExpiresAt: now.Add(resv.ExpiresIn * time.Second),
+	s.token = resv.AccessToken
+	s.expiresAt = time.Now().Add(resv.ExpiresIn * time.Second)
+	return nil
+}
+
+func newAPI(state *authState) *API {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return &API{Token: state.token, ExpiresAt: state.expiresAt, auth: state}
+}
+
+func (a *API) token() string {
+	if a.auth == nil {
+		return a.Token
 	}
-
-	cache[key] = api
-
-	return api, nil
+	a.auth.mu.Lock()
+	defer a.auth.mu.Unlock()
+	return a.auth.token
 }
 
 func (a *API) GetDevices(projectID string) ([]DeviceInfo, error) {
@@ -99,9 +150,9 @@ func (a *API) GetDevices(projectID string) ([]DeviceInfo, error) {
 		return nil, err
 	}
 
-	req.Header.Set("Authorization", "Bearer "+a.Token)
+	req.Header.Set("Authorization", "Bearer "+a.token())
 
-	client := &http.Client{Timeout: time.Second * 5000}
+	client := &http.Client{Timeout: apiRequestTimeout}
 	res, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -176,9 +227,10 @@ func (a *API) ExchangeSDP(projectID, deviceID, offer string) (string, error) {
 			return "", err
 		}
 
-		req.Header.Set("Authorization", "Bearer "+a.Token)
+		token := a.token()
+		req.Header.Set("Authorization", "Bearer "+token)
 
-		client := &http.Client{Timeout: time.Second * 5000}
+		client := &http.Client{Timeout: apiRequestTimeout}
 		res, err := client.Do(req)
 		if err != nil {
 			return "", err
@@ -189,7 +241,7 @@ func (a *API) ExchangeSDP(projectID, deviceID, offer string) (string, error) {
 			res.Body.Close()
 			if attempt < maxRetries-1 {
 				// Get new token from Google
-				if err := a.refreshToken(); err != nil {
+				if err := a.refreshToken(token); err != nil {
 					return "", err
 				}
 				time.Sleep(retryDelay)
@@ -216,10 +268,13 @@ func (a *API) ExchangeSDP(projectID, deviceID, offer string) (string, error) {
 			return "", err
 		}
 
+		a.streamMu.Lock()
 		a.StreamProjectID = projectID
 		a.StreamDeviceID = deviceID
 		a.StreamSessionID = resv.Results.MediaSessionID
 		a.StreamExpiresAt = resv.Results.ExpiresAt
+		a.streamGeneration++
+		a.streamMu.Unlock()
 
 		return resv.Results.Answer, nil
 	}
@@ -227,42 +282,33 @@ func (a *API) ExchangeSDP(projectID, deviceID, offer string) (string, error) {
 	return "", errors.New("nest: max retries exceeded")
 }
 
-func (a *API) refreshToken() error {
-	// Get the cached API with matching token to get credentials
-	var refreshKey string
-	cacheMu.Lock()
-	for key, api := range cache {
-		if api.Token == a.Token {
-			refreshKey = key
-			break
-		}
+func (a *API) refreshToken(previous string) error {
+	if a.auth == nil {
+		return errors.New("nest: missing shared auth state")
 	}
-	cacheMu.Unlock()
+	a.auth.mu.Lock()
+	defer a.auth.mu.Unlock()
 
-	if refreshKey == "" {
-		return errors.New("nest: unable to find cached credentials")
+	if a.auth.token != previous {
+		return nil
 	}
-
-	// Parse credentials from cache key
-	parts := strings.Split(refreshKey, ":")
-	if len(parts) != 3 {
-		return errors.New("nest: invalid cache key format")
-	}
-	clientID, clientSecret, refreshToken := parts[0], parts[1], parts[2]
-
-	// Get new API instance which will refresh the token
-	newAPI, err := NewAPI(clientID, clientSecret, refreshToken)
-	if err != nil {
-		return err
-	}
-
-	// Update current API with new token
-	a.Token = newAPI.Token
-	a.ExpiresAt = newAPI.ExpiresAt
-	return nil
+	return a.auth.refreshLocked()
 }
 
 func (a *API) ExtendStream() error {
+	return a.extendStream(context.Background())
+}
+
+func (a *API) extendStream(ctx context.Context) error {
+	a.streamMu.RLock()
+	projectID := a.StreamProjectID
+	deviceID := a.StreamDeviceID
+	sessionID := a.StreamSessionID
+	streamToken := a.StreamToken
+	extensionToken := a.StreamExtensionToken
+	generation := a.streamGeneration
+	a.streamMu.RUnlock()
+
 	var reqv struct {
 		Command string `json:"command"`
 		Params  struct {
@@ -271,14 +317,14 @@ func (a *API) ExtendStream() error {
 		} `json:"params"`
 	}
 
-	if a.StreamToken != "" {
+	if streamToken != "" {
 		// RTSP
 		reqv.Command = "sdm.devices.commands.CameraLiveStream.ExtendRtspStream"
-		reqv.Params.StreamExtensionToken = a.StreamExtensionToken
+		reqv.Params.StreamExtensionToken = extensionToken
 	} else {
 		// WebRTC
 		reqv.Command = "sdm.devices.commands.CameraLiveStream.ExtendWebRtcStream"
-		reqv.Params.MediaSessionID = a.StreamSessionID
+		reqv.Params.MediaSessionID = sessionID
 	}
 
 	b, err := json.Marshal(reqv)
@@ -287,15 +333,15 @@ func (a *API) ExtendStream() error {
 	}
 
 	uri := "https://smartdevicemanagement.googleapis.com/v1/enterprises/" +
-		a.StreamProjectID + "/devices/" + a.StreamDeviceID + ":executeCommand"
-	req, err := http.NewRequest("POST", uri, bytes.NewReader(b))
+		projectID + "/devices/" + deviceID + ":executeCommand"
+	req, err := http.NewRequestWithContext(ctx, "POST", uri, bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
 
-	req.Header.Set("Authorization", "Bearer "+a.Token)
+	req.Header.Set("Authorization", "Bearer "+a.token())
 
-	client := &http.Client{Timeout: time.Second * 5000}
+	client := &http.Client{Timeout: apiRequestTimeout}
 	res, err := client.Do(req)
 	if err != nil {
 		return err
@@ -319,10 +365,14 @@ func (a *API) ExtendStream() error {
 		return err
 	}
 
-	a.StreamSessionID = resv.Results.MediaSessionID
-	a.StreamExpiresAt = resv.Results.ExpiresAt
-	a.StreamExtensionToken = resv.Results.StreamExtensionToken
-	a.StreamToken = resv.Results.StreamToken
+	a.streamMu.Lock()
+	if a.streamGeneration == generation {
+		a.StreamSessionID = resv.Results.MediaSessionID
+		a.StreamExpiresAt = resv.Results.ExpiresAt
+		a.StreamExtensionToken = resv.Results.StreamExtensionToken
+		a.StreamToken = resv.Results.StreamToken
+	}
+	a.streamMu.Unlock()
 
 	return nil
 }
@@ -346,9 +396,9 @@ func (a *API) GenerateRtspStream(projectID, deviceID string) (string, error) {
 		return "", err
 	}
 
-	req.Header.Set("Authorization", "Bearer "+a.Token)
+	req.Header.Set("Authorization", "Bearer "+a.token())
 
-	client := &http.Client{Timeout: time.Second * 5000}
+	client := &http.Client{Timeout: apiRequestTimeout}
 	res, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -375,19 +425,31 @@ func (a *API) GenerateRtspStream(projectID, deviceID string) (string, error) {
 		return "", errors.New("nest: failed to generate rtsp url")
 	}
 
+	a.streamMu.Lock()
 	a.StreamProjectID = projectID
 	a.StreamDeviceID = deviceID
 	a.StreamToken = resv.Results.StreamToken
 	a.StreamExtensionToken = resv.Results.StreamExtensionToken
 	a.StreamExpiresAt = resv.Results.ExpiresAt
+	a.streamGeneration++
+	a.streamMu.Unlock()
 
 	return resv.Results.StreamURLs["rtspUrl"], nil
 }
 
 func (a *API) StopRTSPStream() error {
-	if a.StreamProjectID == "" || a.StreamDeviceID == "" {
+	a.streamMu.Lock()
+	projectID, deviceID, extensionToken := a.StreamProjectID, a.StreamDeviceID, a.StreamExtensionToken
+	if projectID == "" || deviceID == "" {
+		a.streamMu.Unlock()
 		return errors.New("nest: tried to stop rtsp stream without a project or device ID")
 	}
+	a.StreamProjectID = ""
+	a.StreamDeviceID = ""
+	a.StreamExtensionToken = ""
+	a.StreamToken = ""
+	a.streamGeneration++
+	a.streamMu.Unlock()
 
 	var reqv struct {
 		Command string `json:"command"`
@@ -396,7 +458,7 @@ func (a *API) StopRTSPStream() error {
 		} `json:"params"`
 	}
 	reqv.Command = "sdm.devices.commands.CameraLiveStream.StopRtspStream"
-	reqv.Params.StreamExtensionToken = a.StreamExtensionToken
+	reqv.Params.StreamExtensionToken = extensionToken
 
 	b, err := json.Marshal(reqv)
 	if err != nil {
@@ -404,29 +466,82 @@ func (a *API) StopRTSPStream() error {
 	}
 
 	uri := "https://smartdevicemanagement.googleapis.com/v1/enterprises/" +
-		a.StreamProjectID + "/devices/" + a.StreamDeviceID + ":executeCommand"
+		projectID + "/devices/" + deviceID + ":executeCommand"
 	req, err := http.NewRequest("POST", uri, bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
 
-	req.Header.Set("Authorization", "Bearer "+a.Token)
+	req.Header.Set("Authorization", "Bearer "+a.token())
 
-	client := &http.Client{Timeout: time.Second * 5000}
+	client := &http.Client{Timeout: apiRequestTimeout}
 	res, err := client.Do(req)
 	if err != nil {
 		return err
 	}
+	defer res.Body.Close()
 
 	if res.StatusCode != 200 {
 		return errors.New("nest: wrong status: " + res.Status)
 	}
 
-	a.StreamProjectID = ""
-	a.StreamDeviceID = ""
-	a.StreamExtensionToken = ""
-	a.StreamToken = ""
+	return nil
+}
 
+func (a *API) StopWebRTCStream() error {
+	a.streamMu.RLock()
+	projectID, deviceID, sessionID := a.StreamProjectID, a.StreamDeviceID, a.StreamSessionID
+	generation := a.streamGeneration
+	if projectID == "" || deviceID == "" || sessionID == "" {
+		a.streamMu.RUnlock()
+		return errors.New("nest: tried to stop webrtc stream without a project, device, or session ID")
+	}
+	a.streamMu.RUnlock()
+
+	var reqv struct {
+		Command string `json:"command"`
+		Params  struct {
+			MediaSessionID string `json:"mediaSessionId"`
+		} `json:"params"`
+	}
+	reqv.Command = "sdm.devices.commands.CameraLiveStream.StopWebRtcStream"
+	reqv.Params.MediaSessionID = sessionID
+
+	b, err := json.Marshal(reqv)
+	if err != nil {
+		return err
+	}
+
+	uri := "https://smartdevicemanagement.googleapis.com/v1/enterprises/" +
+		projectID + "/devices/" + deviceID + ":executeCommand"
+	req, err := http.NewRequest("POST", uri, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+a.token())
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	res, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != 200 && res.StatusCode != http.StatusNotFound {
+		return errors.New("nest: wrong status: " + res.Status)
+	}
+
+	a.streamMu.Lock()
+	if a.streamGeneration == generation {
+		a.StreamProjectID = ""
+		a.StreamDeviceID = ""
+		a.StreamSessionID = ""
+		a.StreamToken = ""
+		a.StreamExtensionToken = ""
+		a.StreamExpiresAt = time.Time{}
+		a.streamGeneration++
+	}
+	a.streamMu.Unlock()
 	return nil
 }
 
@@ -465,22 +580,96 @@ type Device struct {
 }
 
 func (a *API) StartExtendStreamTimer() {
+	a.streamMu.RLock()
+	expiresAt := a.StreamExpiresAt
+	a.streamMu.RUnlock()
+
+	a.extendMu.Lock()
 	if a.extendTimer != nil {
+		a.extendMu.Unlock()
 		return
 	}
 
-	a.extendTimer = time.NewTimer(time.Until(a.StreamExpiresAt) - time.Minute)
+	timer := time.NewTimer(time.Until(expiresAt) - time.Minute)
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	a.extendTimer = timer
+	a.extendDone = done
+	a.extendFinished = finished
+	a.extendCancel = cancel
+	a.extendMu.Unlock()
+
 	go func() {
-		<-a.extendTimer.C
-		if err := a.ExtendStream(); err != nil {
-			return
+		defer close(finished)
+	loop:
+		for {
+			select {
+			case <-timer.C:
+				select {
+				case <-done:
+					break loop
+				default:
+				}
+			case <-done:
+				break loop
+			}
+
+			var err error
+			if a.extendRequest != nil {
+				err = a.extendRequest(ctx)
+			} else {
+				err = a.extendStream(ctx)
+			}
+			if err != nil {
+				break
+			}
+
+			a.streamMu.RLock()
+			nextExpiresAt := a.StreamExpiresAt
+			a.streamMu.RUnlock()
+			if !nextExpiresAt.After(expiresAt) {
+				break
+			}
+			expiresAt = nextExpiresAt
+
+			a.extendMu.Lock()
+			if a.extendTimer != timer {
+				a.extendMu.Unlock()
+				break
+			}
+			timer.Reset(time.Until(expiresAt) - time.Minute)
+			a.extendMu.Unlock()
 		}
+
+		a.extendMu.Lock()
+		if a.extendTimer == timer {
+			a.extendTimer = nil
+			a.extendDone = nil
+			a.extendFinished = nil
+			a.extendCancel = nil
+		}
+		a.extendMu.Unlock()
+		cancel()
 	}()
 }
 
 func (a *API) StopExtendStreamTimer() {
-	if a.extendTimer != nil {
-		a.extendTimer.Stop()
-		a.extendTimer = nil
+	a.extendMu.Lock()
+	timer, done, finished, cancel := a.extendTimer, a.extendDone, a.extendFinished, a.extendCancel
+	a.extendTimer = nil
+	a.extendDone = nil
+	a.extendFinished = nil
+	a.extendCancel = nil
+	a.extendMu.Unlock()
+	if timer != nil {
+		timer.Stop()
+		close(done)
+	}
+	if cancel != nil {
+		cancel()
+	}
+	if finished != nil {
+		<-finished
 	}
 }

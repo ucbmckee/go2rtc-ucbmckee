@@ -79,7 +79,7 @@ func MoveNode(dst, src *Node) {
 	src.mu.Unlock()
 
 	dst.mu.Lock()
-	dst.childs = childs
+	dst.childs = append(dst.childs, childs...)
 	dst.mu.Unlock()
 
 	for _, child := range childs {
