@@ -143,6 +143,9 @@ func (p *Preview) Read(ctx context.Context) (MediaPacket, error) {
 			packet := p.packets[p.next]
 			p.packets[p.next] = MediaPacket{}
 			p.next++
+			if packet.Kind != MediaInfo && len(packet.Data) != 0 {
+				p.client.mediaPackets.Add(1)
+			}
 			return packet, nil
 		}
 		select {

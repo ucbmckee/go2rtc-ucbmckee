@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -43,8 +44,9 @@ type Client struct {
 	seq    uint16
 	reqs   map[pendingKey]chan message
 
-	previewMu sync.RWMutex
-	previews  map[previewKey]*Preview
+	previewMu    sync.RWMutex
+	previews     map[previewKey]*Preview
+	mediaPackets atomic.Uint64
 
 	loginMu sync.Mutex
 	logged  bool
@@ -347,23 +349,35 @@ func (c *Client) keepAlive() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	failures := 0
+	lastPackets := c.mediaPackets.Load()
 	for {
 		select {
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(c.ctx, 4*time.Second)
-			_, err := c.roundTrip(ctx, request{command: commandPing, class: classOffset})
-			cancel()
-			if err == nil {
-				failures = 0
-				continue
-			}
-			failures++
-			if failures == 3 {
-				c.shutdown(fmt.Errorf("baichuan: keepalive failed: %w", err))
+			if c.keepAliveStep(&failures, &lastPackets) {
 				return
 			}
 		case <-c.done:
 			return
 		}
 	}
+}
+
+func (c *Client) keepAliveStep(failures *int, lastPackets *uint64) bool {
+	ctx, cancel := context.WithTimeout(c.ctx, 4*time.Second)
+	_, err := c.roundTrip(ctx, request{command: commandPing, class: classOffset})
+	cancel()
+	packets := c.mediaPackets.Load()
+	if err == nil {
+		*failures = 0
+	} else if errors.Is(err, context.DeadlineExceeded) && packets != *lastPackets {
+		*failures = 0
+	} else {
+		*failures++
+	}
+	*lastPackets = packets
+	if *failures == 3 {
+		c.shutdown(fmt.Errorf("baichuan: keepalive failed: %w", err))
+		return true
+	}
+	return false
 }
